@@ -102,6 +102,7 @@ export interface WorkingTask extends Task {
  *
  * @category `tasks`
  */
+// TODO: Import from SDK once updated for MRTR
 export interface InputRequest {
   /**
    * The JSON-RPC method for the server-to-client request.
@@ -121,6 +122,7 @@ export interface InputRequest {
  *
  * @category `tasks`
  */
+// TODO: Import from SDK once updated for MRTR
 export type InputRequests = Record<string, InputRequest>;
 
 /**
@@ -129,6 +131,7 @@ export type InputRequests = Record<string, InputRequest>;
  *
  * @category `tasks`
  */
+// TODO: Import from SDK once updated for MRTR
 export type InputResponses = Record<string, { [key: string]: unknown }>;
 
 /**
