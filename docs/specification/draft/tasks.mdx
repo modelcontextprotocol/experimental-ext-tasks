@@ -103,8 +103,6 @@ type ResultType = "complete" | "input_required" | "task";
 
 Servers **MUST** set `resultType` to `"task"` when returning a `CreateTaskResult` so that clients can distinguish it from a standard result. Servers **MUST NOT** set `resultType` to `"task"` on result types other than `CreateTaskResult`.
 
-Client implementors are advised that existing code returning a fixed shape (e.g., a `tools/call` method returning `CallToolResult`) need not change their public contract — they can transparently drive the polling flow internally and surface only the final, completed result. New implementation surfaces **MAY** expose the task lifecycle directly for applications able to leverage it.
-
 ## Tasks
 
 A `Task` carries operational metadata about ongoing work. Derived shapes inline status-specific payload fields and are used by `tasks/get` responses and `notifications/tasks/status` notifications:
@@ -889,3 +887,9 @@ The `tasks/get` endpoint returns exactly what the underlying request would have 
 - **Task ID unguessability.** A server **MAY** use task IDs as bearer tokens for a server's stored state. Servers **MUST** generate them with sufficient entropy that a third party cannot enumerate or guess them.
 - **Cross-caller correlation.** Because there is no `tasks/list`, a server cannot inadvertently leak the existence of one caller's tasks to another. This is an improvement over the `2025-11-25` tasks specification, in which a poorly-scoped list could expose unrelated task IDs.
 - **Input-request trust model.** `inputRequests` carry elicitation and sampling payloads from the server through the client to the user or model. Hosts **MUST** apply the same trust model to these payloads as they would to standard elicitation/sampling requests. A task is not a higher-trust channel.
+
+## Implementation Considerations
+
+### Backwards Compatibility
+
+- `2025-11-25` client implementations returning fixed shapes (e.g., a `tools/call` method returning `CallToolResult`) need not change their public method contracts — they can transparently drive the polling flow internally and surface only the final, completed result. New implementation surfaces can then expose the task lifecycle directly for applications able to leverage it.
