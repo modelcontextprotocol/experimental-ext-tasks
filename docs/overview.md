@@ -23,9 +23,28 @@ A task ID is a durable handle that survives disconnects and carries status metad
 
 ## Progressive Enhancement
 
-Servers only return task handles to clients that declared the extension in their per-request capabilities — otherwise, the server returns a standard result or blocks as usual.
+Servers only return task handles to clients that declared the extension in their per-request capabilities — otherwise, the server either blocks for a regular result as usual or returns a capability error.
 
-The server is the sole decider of whether any given request becomes a task. A server that never creates a task remains spec-compliant, and existing tool implementations work unchanged without modification.
+A server that requires task support from the client for a given request returns a `-32003` (Missing Required Client Capability) error, like so:
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    // MISSING_REQUIRED_CLIENT_CAPABILITY
+    "code": -32003,
+    "message": "Missing required client capability",
+    "data": {
+      "requiredCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      }
+    }
+  }
+}
+```
 
 ## Architecture
 
