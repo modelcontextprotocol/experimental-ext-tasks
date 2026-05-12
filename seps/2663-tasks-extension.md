@@ -1,30 +1,54 @@
----
-title: Tasks
----
+# SEP-2663: Tasks Extension
 
-<div id="enable-section-numbers" />
+- **Status**: In-Review
+- **Type**: Extensions Track
+- **Created**: 2026-04-27
+- **Author(s)**: Luca Chang (@LucaButBoring), Caitie McCaffrey (@CaitieM20); on behalf of the Agents Working Group
+- **Sponsor**: Caitie McCaffrey (@CaitieM20)
+- **Extension Identifier**: `io.modelcontextprotocol/tasks`
+- **PR**: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2663
 
-<Note>
+## Abstract
 
-**This document is part of the Tasks extension (`io.modelcontextprotocol/tasks`).**
+This SEP defines an extension that allows a server to respond to a `tools/call` request with an asynchronous _task handle_ instead of a final result, allowing the client to retrieve the eventual result by polling. The extension introduces three methods: `tasks/get`, `tasks/update`, and `tasks/cancel`; a polymorphic-result discriminator (`resultType: "task"`); and a `Task` shape that carries a task status, in-progress server-to-client requests, and a final result or error. Task creation is server-directed: the client signals support by including the extension in its per-request capabilities, and the server decides on a per-request basis whether to materialize a task.
 
-This extension allows a server to respond to a `tools/call` request with an asynchronous _task handle_ instead of a final result, allowing the client to retrieve the eventual result by polling. The extension introduces three methods: `tasks/get`, `tasks/update`, and `tasks/cancel`; a polymorphic-result discriminator (`resultType: "task"`); and a `Task` shape that carries a task status, in-progress server-to-client requests, and a final result or error.
+Tasks will become a foundational building block of MCP and are expected to be supported in future protocol versions. The experimental `tasks` feature in the `2025-11-25` specification served as a stopgap until the protocol's extension mechanism was available. Now that [extensions](https://modelcontextprotocol.io/extensions/overview) have been [formalized](https://modelcontextprotocol.io/seps/2133-extensions), moving tasks to an official extension gives the feature time to incubate and evolve based on additional real-world implementation feedback, without being constrained by the core specification's release cadence. Once the extension has stabilized and achieved broad adoption, it is intended to be promoted into the core protocol.
 
-Task creation is server-directed: the client signals support by including the extension in its per-request capabilities, and the server decides on a per-request basis whether to materialize a task.
+This proposal _removes_ the version of [tasks](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks) specified in the `2025-11-25` release from the core protocol and moves it to an Extension. It also proposes updates to Tasks shaped by implementation feedback since that release, and by several changes to the base protocol included in the `2026-06-30` specification:
 
-</Note>
+- [SEP-2260: Require Server requests to be associated with a Client request](https://modelcontextprotocol.io/seps/2260-Require-Server-requests-to-be-associated-with-Client-requests)
+- [SEP-2322: Multi Round-Trip Requests](https://modelcontextprotocol.io/seps/2322-MRTR)
+- [SEP-2243: HTTP Header Standardization for Streamable HTTP Transport](https://modelcontextprotocol.io/seps/2243-http-standardization)
+- [SEP-2567: Sessionless MCP via Explicit State Handles](https://modelcontextprotocol.io/seps/2567-sessionless-mcp)
+- [SEP-2575: Make MCP Stateless](https://modelcontextprotocol.io/seps/2575-stateless-mcp)
 
-The Model Context Protocol (MCP) Tasks extension allows certain requests to be augmented with **tasks**. Tasks are durable state machines that carry information about the underlying execution state of the request they augment, and are intended for client polling and deferred result retrieval. Each task is uniquely identifiable by a server-generated **task ID**.
+## Motivation
+
+The experimental [tasks](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks) feature served as an alternate execution mode for tool calls, elicitation, and sampling, allowing receivers to return a poll handle instead of blocking until a final result was ready. Implementation experience surfaced several challenges:
+
+1. **The handshake is fragile.** Tasks today expose method-level capabilities (`tasks.requests.tools.call` declares that `tools/call` **MAY** be task-augmented) alongside a tool-level `execution.taskSupport` field that declares whether a particular tool will accept the augmentation. Clients express their own support for tasks by passing a `task` parameter on their requests, but **MUST NOT** include it if the method/tool does not support tasks. A client that wants to opt into tasks must therefore prime its state with a `tools/list` call before issuing any task-augmented request, and cannot blindly attach a `task` parameter to every request to handle tools isomorphically. This is confusing, implicit, and easy to get wrong.
+
+2. **`tasks/result` is a blocking trap.** In the current flow, a client that observes `input_required` is required to call `tasks/result` prematurely so that the server has an SSE stream on which to side-channel elicitation or sampling requests. `tasks/result` then blocks until the entire operation completes. This forces long-lived persistent connections that many clients and servers do not want to implement, and it conflicts with [SEP-2260](https://modelcontextprotocol.io/seps/2260-Require-Server-requests-to-be-associated-with-Client-requests), which disallows unsolicited server-to-client requests outright. Under SEP-2260, the SSE semantics that justified the blocking behavior no longer apply.
+
+3. **`tasks/list` scoping cannot be defined.** To avoid clients cancelling or retrieving results for tasks they shouldn't have access to, all tasks should be bound to some sort of "authorization context," the implementation of which is left to individual servers according to their existing bespoke permission models. However, in many cases, it is not possible to perform this binding, in which case the task ID becomes the only line of defense against contamination. In this scenario, it is unsafe for a server to support `tasks/list` at all. While it was possible for tasks to instead be bound to a session, [SEP-2567](https://modelcontextprotocol.io/seps/2567-sessionless-mcp) removes sessions from the protocol. There is no other natural scope a server can define unilaterally — task IDs can be unguessable handles that a server can recognize one at a time, but servers cannot reliably correlate two unrelated handles to the same caller without additional state.
+
+Beyond implementation challenges, tasks face another structural issue: **Client-hosted tasks are no longer expressible.** [SEP-1686](./1686-tasks.md) permitted clients to host tasks for elicitation and sampling, in part to avoid coupling tasks to tool calls. [SEP-2260](https://modelcontextprotocol.io/seps/2260-Require-Server-requests-to-be-associated-with-Client-requests) makes any unsolicited server-to-client request invalid; every server-to-client polling request under client-hosted tasks would be unsolicited by definition.
+
+This proposal intends to solve the above issues by redesigning certain aspects of the feature and moving tasks out to an official extension. Redefining tasks as an official extension gives the feature more time to incubate and evolve independently of the core specification, promoting adoption. As part of the redesign, this proposal consolidates the polling lifecycle into `tasks/get` and a new `tasks/update` to remove the blocking `tasks/result` method. The redesign allows servers to return tasks unsolicited (in response to ordinary, non-`task`-flagged requests) to eliminate the per-request opt-in and the `tools/list` warmup, relying instead on the extension capability as the single handshake point. Finally, this proposal removes client-hosted elicitation and sampling tasks in compliance with [SEP-2260](https://modelcontextprotocol.io/seps/2260-Require-Server-requests-to-be-associated-with-Client-requests).
+
+## Specification
+
+The MCP Tasks extension allows certain requests to be augmented with **tasks**. Tasks are durable state machines that carry information about the underlying execution state of the request they augment, and are intended for client polling and deferred result retrieval. Each task is uniquely identifiable by a server-generated **task ID**.
 
 Tasks are useful for representing expensive computations and batch processing requests, and map naturally onto external job APIs.
 
-## Extension Identifier
+### Extension Identifier
 
 This extension is identified as: `io.modelcontextprotocol/tasks`.
 
-## Capability Negotiation
+### Capability Negotiation
 
-The client and server declare support for the tasks extension in their respective capabilities objects:
+The client and server declare support for the tasks extension in their respective capabilities objects (using updated form from [SEP-2575: Make MCP Stateless](https://modelcontextprotocol.io/seps/2575-stateless-mcp)):
 
 ```jsonc
 // Client to server, in per-request capabilities
@@ -62,7 +86,7 @@ A server that has negotiated this extension **MAY** return `CreateTaskResult` in
 
 A server **MUST NOT** return `CreateTaskResult` to a client that did not include the extension capability on its request, regardless of prior declarations. A client that has negotiated this extension **MUST** be prepared to handle either `CallToolResult` or `CreateTaskResult` in response to any supported request it issues. A client that receives `CreateTaskResult` in response to an unsupported request type **MUST** interpret this as an invalid response to the request.
 
-## Supported Methods
+### Supported Methods
 
 The following methods currently support task-augmented execution:
 
@@ -70,9 +94,9 @@ The following methods currently support task-augmented execution:
 
 This specification may be extended to support tasks over other request types in the future; implementations **SHOULD** be designed to accommodate additional request types in future revisions of this specification.
 
-## Polymorphic Results
+### Polymorphic Results
 
-A request that is eligible for task-augmentation may return one of two distinct result shapes — the request's standard result, or a `CreateTaskResult`. The discriminator is the `resultType` field on the result object:
+A request that is eligible for task-augmentation may return one of two distinct result shapes — the request's standard result, or a `CreateTaskResult`. The discriminator is the `resultType` field on the result object, introduced by [SEP-2322](https://modelcontextprotocol.io/seps/2322-MRTR):
 
 ```typescript
 // "task" is introduced by this extension.
@@ -83,7 +107,7 @@ Servers **MUST** set `resultType` to `"task"` when returning a `CreateTaskResult
 
 Client implementors are advised that existing code returning a fixed shape (e.g., a `tools/call` method returning `CallToolResult`) need not change their public contract — they can transparently drive the polling flow internally and surface only the final, completed result. New implementation surfaces **MAY** expose the task lifecycle directly for applications able to leverage it.
 
-## Tasks
+### Tasks
 
 A `Task` carries operational metadata about ongoing work. Derived shapes inline status-specific payload fields and are used by `tasks/get` responses and `notifications/tasks/status` notifications:
 
@@ -197,7 +221,7 @@ export type DetailedTask =
   | CancelledTask;
 ```
 
-### Task Status
+#### Task Status
 
 Tasks can be in one of the following states:
 
@@ -207,29 +231,7 @@ Tasks can be in one of the following states:
 - `failed`: The request failed due to a JSON-RPC error during execution. The task will include the `error` field with the JSON-RPC error details. This status **MUST NOT** be used for non-JSON-RPC errors.
 - `cancelled`: The request was cancelled before completion.
 
-**Task Status State Diagram:**
-
-```mermaid
-stateDiagram-v2
-    [*] --> working
-
-    working --> input_required
-    working --> terminal
-
-    input_required --> working
-    input_required --> terminal
-
-    terminal --> [*]
-
-    note right of terminal
-        Terminal states:
-        - completed
-        - failed
-        - cancelled
-    end note
-```
-
-## Task Creation
+### Task Creation
 
 A server returns `CreateTaskResult` in lieu of the standard result shape for a request to indicate that request will be processed asynchronously.
 
@@ -279,7 +281,7 @@ A server **MUST NOT** return `CreateTaskResult` until the task is durably create
 
 Server implementations that use multi round-trip requests in conjunction with task creation (for example, a tool that requires elicitation over `InputRequiredResult` before creating a task) **SHOULD** resolve all MRTR exchanges _synchronously_ before responding with a `CreateTaskResult`.
 
-## Task Polling
+### Task Polling
 
 Clients poll for task completion by sending `tasks/get` requests.
 
@@ -287,7 +289,7 @@ Clients **SHOULD** respect the `pollIntervalMs` provided in responses when deter
 
 Clients **SHOULD** continue polling until the task reaches a terminal status or until invoking `tasks/cancel`. Clients **SHOULD** persist task IDs to durable storage so that polling can resume after a crash or restart.
 
-### Request
+#### Request
 
 ```typescript
 interface GetTaskRequest extends JSONRPCRequest {
@@ -299,7 +301,7 @@ interface GetTaskRequest extends JSONRPCRequest {
 }
 ```
 
-### Response
+#### Response
 
 ```typescript
 type GetTaskResult = Result & DetailedTask;
@@ -309,13 +311,13 @@ The response carries the appropriate response variant for the task's current sta
 
 If the task has a non-null `ttlMs`, clients **MAY** treat the TTL as a backstop: if the task's observable status has not reflected the update after `createdAt` plus `ttlMs` has elapsed, the client **MAY** consider the task to no longer be usable. Conversely, servers **MAY** mark a task as `failed` at any point after the TTL elapses, and subsequently delete it at any time. The value of `ttlMs` **MAY** change over the lifetime of a task.
 
-## Task Input Requests
+### Task Input Requests
 
 When a task requires input from the client (indicated by the `input_required` status), the server includes outstanding requests in the `inputRequests` field of the `tasks/get` response. The client provides responses via the `inputResponses` field in one or more subsequent `tasks/update` requests.
 
 Each request key in `inputRequests` **MUST** be unique over the lifetime of a single task. A server **MUST NOT** reuse a key for a subsequent server-to-client request after a response for that key has been delivered, and **MUST NOT** use the same key to refer to two distinct requests over a task's lifetime. This guarantees that `inputResponses` keyed by the same identifier always refer to the request the client expects, eliminates ambiguity for clients deduplicating across polls, and lets servers ignore `inputResponses` for unknown or already-satisfied requests.
 
-### Request
+#### Request
 
 ```typescript
 interface UpdateTaskRequest extends JSONRPCRequest {
@@ -334,7 +336,7 @@ interface UpdateTaskRequest extends JSONRPCRequest {
 }
 ```
 
-### Response
+#### Response
 
 ```typescript
 type UpdateTaskResult = Result; // empty acknowledgement
@@ -346,11 +348,11 @@ A server **SHOULD** ignore any `inputResponses` responses mapped to a key that i
 
 The `resultType` field **MUST** be set to `"complete"` on `UpdateTaskResult` as it is the standard result shape for the `tasks/update` request.
 
-## Task Cancellation
+### Task Cancellation
 
 A client sends a `tasks/cancel` request to signal its intent to cancel an in-progress task. The `notifications/cancelled` notification **MUST NOT** be used for task cancellation.
 
-### Request
+#### Request
 
 ```typescript
 interface CancelTaskRequest extends JSONRPCRequest {
@@ -361,7 +363,7 @@ interface CancelTaskRequest extends JSONRPCRequest {
 }
 ```
 
-### Response
+#### Response
 
 ```typescript
 type CancelTaskResult = Result; // empty acknowledgement
@@ -375,7 +377,7 @@ Clients **MAY** delete all state associated with the task as soon as they send a
 
 The `resultType` field **MUST** be set to `"complete"` on `CancelTaskResult` as it is the standard result shape for the `tasks/cancel` request.
 
-## Task Status Notifications
+### Task Status Notifications
 
 Servers **MAY** push status updates via `notifications/tasks/status` notifications in addition to servicing client polls:
 
@@ -388,7 +390,7 @@ export interface TaskStatusNotification extends JSONRPCNotification {
 }
 ```
 
-To begin listening for task status notifications, clients send a `subscriptions/listen` request to the server including a list of task IDs the client is interested in:
+To begin listening for task status notifications, clients send a `subscriptions/listen` request to the server including a list of task IDs the client is interested in (see [SEP-2575](https://modelcontextprotocol.io/seps/2575-stateless-mcp)):
 
 ```typescript
 export interface SubscriptionsListenRequest extends Request {
@@ -422,12 +424,14 @@ export interface SubscriptionsAcknowledgedNotification extends Notification {
 
 If a client requests task status notifications but does not declare the `io.modelcontextprotocol/tasks` extension capability, the server **MUST** return a JSON-RPC error specifying the missing capabilities:
 
-```json
+```jsonl
 {
   "jsonrpc": "2.0",
   "id": 12,
   "error": {
+    // MISSING_REQUIRED_CLIENT_CAPABILITY
     "code": -32003,
+    // Message provided for example purposes only. The content of this example message is non-normative.
     "message": "Missing required client capability",
     "data": {
       "requiredCapabilities": {
@@ -470,11 +474,11 @@ Each notification carries a complete `DetailedTask` for the current status, iden
 
 The notification includes the full task object, allowing clients to access the complete task state and final results without polling the `tasks/get` method. Clients **MAY** continue polling `tasks/get` in addition to subscribing to task status notifications, but need not do so.
 
-## Streamable HTTP: Routing Headers
+### Streamable HTTP: Routing Headers
 
-When `tasks/get`, `tasks/update`, or `tasks/cancel` is sent over the Streamable HTTP transport, the client **MUST** set the `Mcp-Name` header to the value of `params.taskId`. This allows transport intermediaries and load balancers to route subsequent requests for the same task to the server instance holding its state, which is typically required for correctness. The `Mcp-Method` header is set to the JSON-RPC method name per standard header conventions.
+When `tasks/get`, `tasks/update`, or `tasks/cancel` is sent over the Streamable HTTP transport, the client **MUST** set the `Mcp-Name` header (defined by [SEP-2243](https://modelcontextprotocol.io/seps/2243-http-standardization)) to the value of `params.taskId`. This allows transport intermediaries and load balancers to route subsequent requests for the same task to the server instance holding its state, which is typically required for correctness. The `Mcp-Method` header is set to the JSON-RPC method name per [SEP-2243](https://modelcontextprotocol.io/seps/2243-http-standardization).
 
-## Example Message Flow
+### Example Message Flow
 
 Consider a simple tool call, `hello_world`, requiring an elicitation for the user to provide their name. The tool itself takes no arguments.
 
@@ -549,13 +553,7 @@ On each request while the task is in a `"working"` status, the server returns a 
 }
 ```
 
-Eventually, the server reaches the point at which it needs to send an elicitation to the user. It sets the task status to `"input_required"` to signal this. On the next `tasks/get` request from the client, the server sends the elicitation payload via the `inputRequests` field.
-
-<Note>
-
-While task `inputRequests` share structural similarities with multi round-trip requests, they are a distinct mechanism: task `inputRequests` are surfaced via `tasks/get` and fulfilled via `tasks/update`, not via retries of the original method. A server that needs client input _before_ returning a `CreateTaskResult` (e.g. to decide whether to proceed) uses the multi round-trip request flow on the original request; a server that needs client input _during_ task execution uses the `inputRequests`/`inputResponses` mechanism described here.
-
-</Note>
+Eventually, the server reaches the point at which it needs to send an elicitation to the user. It sets the task status to `"input_required"` to signal this. On the next `tasks/get` request from the client, the server sends the elicitation payload via the `inputRequests` field. Note that while task `inputRequests` share structural similarities with [SEP-2322](https://modelcontextprotocol.io/seps/2322-MRTR) multi round-trip requests, they are a distinct mechanism: task `inputRequests` are surfaced via `tasks/get` and fulfilled via `tasks/update`, not via retries of the original method. A server that needs client input _before_ returning a `CreateTaskResult` (e.g. to decide whether to proceed) uses the multi round-trip request flow on the original request; a server that needs client input _during_ task execution uses the `inputRequests`/`inputResponses` mechanism described here.
 
 ```json
 {
@@ -600,7 +598,7 @@ While task `inputRequests` share structural similarities with multi round-trip r
 }
 ```
 
-For thoroughness, consider a case where the client happens to poll `tasks/get` again _before_ the user has fulfilled the elicitation request. As `inputRequests` is effectively a point-in-time snapshot of all outstanding server-to-client requests associated with the task, the server includes the same request again, despite the client having already seen this information (the client is advised to deduplicate `inputRequests` with the same key for UX purposes):
+For thoroughness, let's consider a case where the client happens to poll `tasks/get` again _before_ the user has fulfilled the elicitation request. As `inputRequests` is effectively a point-in-time snapshot of all outstanding server-to-client requests associated with the task, the server includes the same request again, despite the client having already seen this information (the client is advised to deduplicate `inputRequests` with the same key for UX purposes):
 
 ```json
 {
@@ -678,7 +676,7 @@ The server acknowledges the request:
 }
 ```
 
-Asynchronously, the server processes the input and moves the task back into the `working` status:
+Asynchronously, the server processes it and moves the task back into the `working` status:
 
 ```json
 {
@@ -745,14 +743,14 @@ Eventually, the server completes the request, so it stores the final `CallToolRe
 }
 ```
 
-## Error Handling
+### Error Handling
 
 Tasks use two error reporting mechanisms:
 
 1. **Protocol Errors**: Standard JSON-RPC errors for protocol-level issues
 2. **Task Execution Errors**: Errors in the underlying request execution, reported through task status
 
-### Protocol Errors
+#### Protocol Errors
 
 Servers **MUST** return standard JSON-RPC errors for the following protocol error cases:
 
@@ -789,13 +787,9 @@ Servers **SHOULD** provide informative error messages to describe the cause of e
 }
 ```
 
-<Note>
-
 Servers are not required to retain tasks indefinitely. It is compliant behavior for a server to return an error stating the task cannot be found if it has purged an expired task.
 
-</Note>
-
-### Task Execution Errors
+#### Task Execution Errors
 
 When the underlying request encounters a JSON-RPC protocol error during execution, the task moves to the `failed` status. The `tasks/get` response **SHOULD** include a `statusMessage` field with diagnostic information about the failure, and **MUST** include the `error` field with the JSON-RPC error.
 
@@ -825,7 +819,7 @@ The `failed` status **MUST NOT** be used to represent non-JSON-RPC errors, such 
 
 **Example: Tool call completed with tool error (isError: true)**
 
-For tool calls that complete successfully at the protocol level but return a tool-level error (indicated by `isError: true` in the tool result), the task reaches `completed` status with the tool result in the `result` field:
+For tool calls that complete successfully at the protocol level but return an tool-level error (indicated by `isError: true` in the tool result), the task reaches `completed` status with the tool result in the `result` field:
 
 ```json
 {
@@ -856,14 +850,74 @@ The `tasks/get` endpoint returns exactly what the underlying request would have 
 - If the underlying request resulted in a JSON-RPC error, the task uses `failed` status and the `error` field **MUST** contain that JSON-RPC error.
 - If the request completed with a result (even if `isError: true` for tool results), the task uses `completed` status and the `result` field **MUST** contain that result.
 
-## Reservations
+### Reservations
 
 - The `tasks/` method prefix and `notifications/tasks/` notification prefix are reserved for this extension.
 - The result-discriminator value `"task"` for `resultType` is reserved for this extension.
 - The label `io.modelcontextprotocol/tasks` is reserved for this extension.
 
-## Security Considerations
+## Rationale
+
+### Unsolicited Tasks vs. Immediate Results
+
+An [alternative proposal](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1905) would have handled the immediate result case individually, and with slightly different preconditions: _If_ tasks are supported, _and_ the client supports immediate task results, _then_ servers may return a regular result in response to a task-augmented request. That version of immediate results looked like a better option at the time, as it implied no breaking changes on top of the initial tasks specification.
+
+However, as we look to [move away](https://blog.modelcontextprotocol.io/posts/2025-12-19-mcp-transport-future/) from stateful protocol interactions and given the current experimental state of tasks in general, it seems worth proposing a somewhat more radical change that reduces the complexity of the overall specification and makes tasks more "native" to MCP at this time. In particular, the choice to allow unsolicited tasks (in _addition_ to immediate results) means promoting tasks to a first-class concept intended for all persistent operations, as opposed to being a parallel and somewhat specialized concept.
+
+This happens to align with the proposed [SEP-2322](https://modelcontextprotocol.io/seps/2322-MRTR), but the two are not coupled with one another.
+
+### Splitting Reads (`tasks/get`) and Writes (`tasks/update`)
+
+Earlier drafts of this redesign let `tasks/get` carry `inputResponses` so a single round trip would both submit responses and observe the resulting state. That conflation has costs: it makes the read path non-idempotent (a retried `tasks/get` could re-submit responses), it forces the read path to share the eventual-consistency model of the write, and it complicates intermediaries that want to cache or deduplicate reads. Splitting the methods leaves `tasks/get` as a pure, idempotent read that any layer can cache or replay safely, and confines write semantics — including their eventual-consistency window — to `tasks/update`.
+
+`tasks/update`'s ack-only response shape follows from the same separation: there is no read data the server needs to return that the client cannot get from a follow-up `tasks/get`, and forcing an embedded `Task` into the response would re-introduce the non-idempotency we are trying to avoid. The cost is one extra round-trip per round of input — paid only when the task actually requires a client request.
+
+### Task Creation Consistency
+
+The following new requirement is introduced:
+
+> A server **MUST NOT** return `CreateTaskResult` until the task is durably created — that is, until a `tasks/get` for the returned `taskId` would resolve. In eventually-consistent environments, the server **MUST** wait for consistency before responding. This requirement eliminates the need for clients to speculatively poll for task creation.
+
+Unlike `tasks/update` and `tasks/cancel`, task creation is strongly-consistent. This has to be the case to avoid speculative `tasks/get` requests from requestors that would otherwise not know if a task has silently been dropped or if it simply has not been created yet. Conversely, eventual consistency in `tasks/update` and `tasks/cancel` works because the client behavior is not contingent on the results of those operations (the client can continue to poll either way). While consistent task creation does increase latency costs in distributed systems that did not already behave this way, explicitly introducing this requirement simplifies client implementations and eliminates a source of undefined behavior.
+
+This also aligns with long-running operation APIs in general, which typically require that once an operation is acknowledged, it must be findable via the polling endpoint.
+
+### Ack-only Cancellation
+
+In the `2025-11-25` design of tasks, `tasks/cancel` returned a task describing the task's state immediately after the cancellation attempt. That return shape implies a synchronous read — the server must consult task state to populate it — but cancellation is inherently asynchronous in many applications (a separate worker decides whether and when to honor it), so the returned task object would in many cases simply repeat what the next `tasks/get` would show. Reducing `tasks/cancel` to an ack matches the operation's actual semantics: The request is a signal, not a state query. Clients that want to know the post-cancel status do so via `tasks/get` on the same code path they use for all other state observation.
+
+The eventual-consistency on the ack is the same separation as for `tasks/update`: The server may record the cancellation request and respond before the worker has actually transitioned the task, without allowing the client to interpret the ack as strongly-consistent.
+
+While `tasks/update` and `tasks/cancel` use ack-only response shapes for the reasons above, servers **SHOULD** still return errors for clearly invalid requests — such as an unknown `taskId`. The ack-only design is about avoiding synchronous reads of task state in the success path, not about suppressing errors that the server can detect at request time. Returning errors for invalid inputs gives clients a faster signal that something is wrong, rather than forcing them to discover the problem indirectly through subsequent `tasks/get` polls.
+
+### Composition with Multi Round-Trip Requests
+
+The following new requirement is introduced:
+
+> Server implementations that use multi round-trip requests in conjunction with task creation (for example, a tool that requires elicitation over `InputRequiredResult` before creating a task) **SHOULD** resolve all MRTR exchanges _synchronously_ before responding with a `CreateTaskResult`.
+
+A `tools/call` that supports both MRTR ([SEP-2322](https://modelcontextprotocol.io/seps/2322-MRTR)) and this extension may use them sequentially by sending one or more `InputRequiredResult` exchanges to gather input synchronously, followed by a `CreateTaskResult` to hand off to asynchronous execution. This composition is a consequence of the `resultType` discriminator — each response is independently typed and the client switches behavior based on the value it receives, _without_ maintaining any state between the two modes. Prohibiting this would require imposing an artificial constraint with no protocol-level mechanism to enforce it, since the client is unaware that the server will create a task ahead of time.
+
+The two flows maintain separate state despite sharing field names. The MRTR phase ends when the server returns any non-`"input_required"` `resultType`, at which point its `inputRequests` keys are consumed. The task phase begins with `CreateTaskResult` and maintains _its own_ `inputRequests` keys independently. Key uniqueness for task `inputRequests` is scoped to the lifetime of the task and does not extend to keys from the preceding MRTR phase. Clients do not need to deduplicate across the two flows.
+
+## Backward Compatibility
+
+The experimental tasks feature in the `2025-11-25` release is **not wire-compatible** with this extension. Specifically:
+
+- `tasks/result` is removed. Clients calling `tasks/result` against a server with this extension in the `2026-06-30` specification **MUST** receive `-32601` (Method Not Found).
+- The `task` parameter on `CallToolRequest` is removed. Servers receiving requests with a `task` parameter under this extension in the `2026-06-30` specification **MUST** ignore it (treat the field as unknown) rather than using it as an opt-in.
+- The `tasks.requests.*` and `tasks.cancel`/`tasks.list` capability declarations are not part of this extension. A server that previously advertised these **MUST** migrate to declaring `io.modelcontextprotocol/tasks` as of the `2026-06-30` specification and **MUST NOT** continue to advertise the legacy capabilities under any protocol version that includes this extension.
+
+Implementations that need to bridge legacy clients can shim at the SDK level: a server can implement both the experimental and extension surfaces in parallel, dispatching based on which capability and protocol version the client negotiated.
+
+A server that returns the standard `CallToolResult` shape — i.e., never elects to create a task — remains fully spec-compliant under this extension. Clients that have negotiated the extension **MUST** handle both result shapes for any augmented request.
+
+## Security Implications
 
 - **Task ID unguessability.** A server **MAY** use task IDs as bearer tokens for a server's stored state. Servers **MUST** generate them with sufficient entropy that a third party cannot enumerate or guess them.
 - **Cross-caller correlation.** Because there is no `tasks/list`, a server cannot inadvertently leak the existence of one caller's tasks to another. This is an improvement over the `2025-11-25` tasks specification, in which a poorly-scoped list could expose unrelated task IDs.
 - **Input-request trust model.** `inputRequests` carry elicitation and sampling payloads from the server through the client to the user or model. Hosts **MUST** apply the same trust model to these payloads as they would to standard elicitation/sampling requests. A task is not a higher-trust channel.
+
+## Reference Implementation
+
+Implemented in [mcpkit](https://github.com/panyam/mcpkit/blob/02cfbe0d2cada8167b9043b9130804c8638b0aa5/core/task_v2.go) (see [usage example](https://github.com/panyam/mcpkit/tree/02cfbe0d2cada8167b9043b9130804c8638b0aa5/examples/tasks-v2)).

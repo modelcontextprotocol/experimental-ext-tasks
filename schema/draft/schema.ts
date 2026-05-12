@@ -8,19 +8,13 @@
  * - Use `@description` JSDoc tags to generate `.describe()` calls on schemas
  * - Run `npm run generate:schemas` to regenerate schemas from these types
  *
- * @see https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks
+ * @see https://modelcontextprotocol.io/seps/2663-tasks-extension
  */
 
 import type {
-  Cursor,
   JSONRPCNotification,
   JSONRPCRequest,
   NotificationParams,
-  PaginatedRequest,
-  PaginatedResult,
-  ProgressToken,
-  RequestId,
-  RequestParams,
   Result,
 } from "@modelcontextprotocol/sdk/types.js";
 
@@ -35,34 +29,8 @@ export type TaskStatus =
   | "working" // The request is currently being processed
   | "input_required" // The task is waiting for input (e.g., elicitation or sampling)
   | "completed" // The request completed successfully and results are available
-  | "failed" // The associated request did not complete successfully. For tool calls specifically, this includes cases where the tool call result has `isError` set to true.
+  | "failed" // The associated request failed due to a JSON-RPC error during execution
   | "cancelled"; // The request was cancelled before completion
-
-/**
- * Metadata for augmenting a request with task execution.
- * Include this in the `task` field of the request parameters.
- *
- * @category `tasks`
- */
-export interface TaskMetadata {
-  /**
-   * Requested duration in milliseconds to retain task from creation.
-   */
-  ttl?: number;
-}
-
-/**
- * Metadata for associating messages with a task.
- * Include this in the `_meta` field under the key `io.modelcontextprotocol/related-task`.
- *
- * @category `tasks`
- */
-export interface RelatedTaskMetadata {
-  /**
-   * The task identifier this message is associated with.
-   */
-  taskId: string;
-}
 
 /**
  * Data associated with a task.
@@ -76,13 +44,15 @@ export interface Task {
   taskId: string;
 
   /**
-   * Current task state.
+   * Current task status.
    */
   status: TaskStatus;
 
   /**
    * Optional human-readable message describing the current task state.
    * This can provide context for any status, including:
+   * - Progress descriptions for "working"
+   * - Work blocked on "input_required"
    * - Reasons for "cancelled" status
    * - Summaries for "completed" status
    * - Diagnostic information for "failed" status (e.g., error details, what went wrong)
@@ -100,25 +70,150 @@ export interface Task {
   lastUpdatedAt: string;
 
   /**
-   * Actual retention duration from creation in milliseconds, null for unlimited.
+   * Time-to-live duration from creation in integer milliseconds, null for unlimited.
+   * The server may discard the task after the TTL elapses. This value MAY change
+   * over the lifetime of a task.
    * @nullable
    */
-  ttl: number | null;
+  ttlMs: number | null;
 
   /**
-   * Suggested polling interval in milliseconds.
+   * Suggested polling interval in integer milliseconds. Clients SHOULD honor
+   * this value to avoid overwhelming the server. This value MAY change over
+   * the lifetime of a task.
    */
-  pollInterval?: number;
+  pollIntervalMs?: number;
 }
 
+/* Detailed Task Variants */
+
 /**
- * A response to a task-augmented request.
+ * A task that is in a normal working state.
+ * Used by tasks/get and notifications/tasks/status.
  *
  * @category `tasks`
  */
-export interface CreateTaskResult extends Result {
-  task: Task;
+export interface WorkingTask extends Task {
+  status: "working";
 }
+
+/**
+ * A single input request from the server to the client during task execution.
+ *
+ * @category `tasks`
+ */
+export interface InputRequest {
+  /**
+   * The JSON-RPC method for the server-to-client request.
+   */
+  method: string;
+
+  /**
+   * Parameters for the server-to-client request.
+   */
+  params: { [key: string]: unknown };
+}
+
+/**
+ * Outstanding server-to-client requests that need to be fulfilled during task execution.
+ * Keys are arbitrary identifiers for matching requests to responses. Each key MUST be
+ * unique over the lifetime of a single task.
+ *
+ * @category `tasks`
+ */
+export type InputRequests = Record<string, InputRequest>;
+
+/**
+ * Client responses to outstanding input requests. Each key MUST correspond to a
+ * currently-outstanding inputRequest key.
+ *
+ * @category `tasks`
+ */
+export type InputResponses = Record<string, { [key: string]: unknown }>;
+
+/**
+ * A task that is waiting for input from the client.
+ * Used by tasks/get and notifications/tasks/status.
+ *
+ * @category `tasks`
+ */
+export interface InputRequiredTask extends Task {
+  status: "input_required";
+
+  /**
+   * Server-to-client requests that need to be fulfilled during task execution.
+   * Keys are arbitrary identifiers for matching requests to responses.
+   */
+  inputRequests: InputRequests;
+}
+
+/**
+ * A task that has completed successfully.
+ * Used by tasks/get and notifications/tasks/status.
+ *
+ * @category `tasks`
+ */
+export interface CompletedTask extends Task {
+  status: "completed";
+
+  /**
+   * The final result of the task.
+   * The structure matches the result type of the original request.
+   * For example, a CallToolRequest task would return the CallToolResult structure.
+   */
+  result: { [key: string]: unknown };
+}
+
+/**
+ * A task that has failed due to a JSON-RPC error during execution.
+ * Used by tasks/get and notifications/tasks/status.
+ *
+ * @category `tasks`
+ */
+export interface FailedTask extends Task {
+  status: "failed";
+
+  /**
+   * The JSON-RPC error that caused the task to fail.
+   */
+  error: { [key: string]: unknown };
+}
+
+/**
+ * A task that has been cancelled.
+ * Used by tasks/get and notifications/tasks/status.
+ *
+ * @category `tasks`
+ */
+export interface CancelledTask extends Task {
+  status: "cancelled";
+}
+
+/**
+ * A union type representing a task with status-specific fields inlined.
+ * This type is used by tasks/get responses and notifications/tasks/status
+ * notifications to provide complete task state including terminal results
+ * or pending input requests.
+ *
+ * @category `tasks`
+ */
+export type DetailedTask =
+  | WorkingTask
+  | InputRequiredTask
+  | CompletedTask
+  | FailedTask
+  | CancelledTask;
+
+/* Task Creation */
+
+/**
+ * The result returned by a server in lieu of a standard result shape when
+ * it elects to process a request asynchronously. The resultType field MUST
+ * be set to "task". This type is Result & Task (flat).
+ *
+ * @category `tasks`
+ */
+export type CreateTaskResult = Result & Task;
 
 /* Task Operations */
 
@@ -138,37 +233,42 @@ export interface GetTaskRequest extends JSONRPCRequest {
 }
 
 /**
- * The response to a tasks/get request.
+ * The response to a tasks/get request. Carries the appropriate DetailedTask
+ * variant for the task's current status. The resultType field MUST be set
+ * to "complete".
  *
  * @category `tasks/get`
  */
-export type GetTaskResult = Result & Task;
+export type GetTaskResult = Result & DetailedTask;
 
 /**
- * A request to retrieve the result of a completed task.
+ * A request to provide input responses to a task in the input_required state.
  *
- * @category `tasks/result`
+ * @category `tasks/update`
  */
-export interface GetTaskPayloadRequest extends JSONRPCRequest {
-  method: "tasks/result";
+export interface UpdateTaskRequest extends JSONRPCRequest {
+  method: "tasks/update";
   params: {
     /**
-     * The task identifier to retrieve results for.
+     * The task identifier to update.
      */
     taskId: string;
+
+    /**
+     * Responses to outstanding inputRequests previously surfaced by the server.
+     * Each key MUST correspond to a currently-outstanding inputRequest key.
+     */
+    inputResponses: InputResponses;
   };
 }
 
 /**
- * The response to a tasks/result request.
- * The structure matches the result type of the original request.
- * For example, a tools/call task would return the CallToolResult structure.
+ * The response to a tasks/update request. An empty acknowledgement.
+ * The resultType field MUST be set to "complete".
  *
- * @category `tasks/result`
+ * @category `tasks/update`
  */
-export interface GetTaskPayloadResult extends Result {
-  [key: string]: unknown;
-}
+export type UpdateTaskResult = Result;
 
 /**
  * A request to cancel a task.
@@ -186,42 +286,29 @@ export interface CancelTaskRequest extends JSONRPCRequest {
 }
 
 /**
- * The response to a tasks/cancel request.
+ * The response to a tasks/cancel request. An empty acknowledgement.
+ * Cancellation is cooperative and eventually consistent.
+ * The resultType field MUST be set to "complete".
  *
  * @category `tasks/cancel`
  */
-export type CancelTaskResult = Result & Task;
-
-/**
- * A request to retrieve a list of tasks.
- *
- * @category `tasks/list`
- */
-export interface ListTasksRequest extends PaginatedRequest {
-  method: "tasks/list";
-}
-
-/**
- * The response to a tasks/list request.
- *
- * @category `tasks/list`
- */
-export interface ListTasksResult extends PaginatedResult {
-  tasks: Task[];
-}
+export type CancelTaskResult = Result;
 
 /* Task Notifications */
 
 /**
  * Parameters for a `notifications/tasks/status` notification.
+ * Carries a complete DetailedTask for the current status.
  *
  * @category `notifications/tasks/status`
  */
 export type TaskStatusNotificationParams = NotificationParams &
-  Task & { [key: string]: unknown };
+  DetailedTask & { [key: string]: unknown };
 
 /**
- * An optional notification from the receiver to the requestor, informing them that a task's status has changed. Receivers are not required to send these notifications.
+ * An optional notification from the server to the client, informing it that
+ * a task's status has changed. Servers are not required to send these notifications.
+ * Clients subscribe via subscriptions/listen.
  *
  * @category `notifications/tasks/status`
  */
@@ -230,113 +317,41 @@ export interface TaskStatusNotification extends JSONRPCNotification {
   params: TaskStatusNotificationParams;
 }
 
-/* Task-Augmented Request Params */
+/* Subscription Additions */
 
 /**
- * Common params for any task-augmented request.
- * Extends the base RequestParams to include an optional `task` field.
+ * Task-specific fields for the subscriptions/listen request.
+ * Clients include tasksStatus to subscribe to notifications/tasks/status
+ * for specific task IDs.
  *
- * @category `tasks`
+ * @category `subscriptions`
  */
-export interface TaskAugmentedRequestParams extends RequestParams {
+export interface TaskSubscriptionNotifications {
   /**
-   * If specified, the caller is requesting task-augmented execution for this request.
-   * The request will return a CreateTaskResult immediately, and the actual result can be
-   * retrieved later via tasks/result.
-   *
-   * Task augmentation is subject to capability negotiation - receivers MUST declare support
-   * for task augmentation of specific request types in their capabilities.
+   * Subscribe to notifications/tasks/status for specific task IDs.
    */
-  task?: TaskMetadata;
-}
-
-/* Capability Additions */
-
-/**
- * Task-related server capabilities.
- * Include this in the server's `capabilities` object during initialization.
- *
- * @category `tasks`
- */
-export interface TaskServerCapabilities {
-  tasks?: {
-    /**
-     * Whether this server supports tasks/list.
-     */
-    list?: Record<string, never>;
-    /**
-     * Whether this server supports tasks/cancel.
-     */
-    cancel?: Record<string, never>;
-    /**
-     * Specifies which request types can be augmented with tasks.
-     */
-    requests?: {
-      /**
-       * Task support for tool-related requests.
-       */
-      tools?: {
-        /**
-         * Whether the server supports task-augmented tools/call requests.
-         */
-        call?: Record<string, never>;
-      };
-    };
-  };
+  tasksStatus?: string[];
 }
 
 /**
- * Task-related client capabilities.
- * Include this in the client's `capabilities` object during initialization.
+ * Task-specific fields for the notifications/subscriptions/acknowledged notification.
+ * The server includes the list of task IDs it has agreed to send status notifications for.
  *
- * @category `tasks`
+ * @category `subscriptions`
  */
-export interface TaskClientCapabilities {
-  tasks?: {
-    /**
-     * Whether this client supports tasks/list.
-     */
-    list?: Record<string, never>;
-    /**
-     * Whether this client supports tasks/cancel.
-     */
-    cancel?: Record<string, never>;
-    /**
-     * Specifies which request types can be augmented with tasks.
-     */
-    requests?: {
-      /**
-       * Task support for sampling-related requests.
-       */
-      sampling?: {
-        /**
-         * Whether the client supports task-augmented sampling/createMessage requests.
-         */
-        createMessage?: Record<string, never>;
-      };
-      /**
-       * Task support for elicitation-related requests.
-       */
-      elicitation?: {
-        /**
-         * Whether the client supports task-augmented elicitation/create requests.
-         */
-        create?: Record<string, never>;
-      };
-    };
-  };
+export interface TaskSubscriptionAcknowledgedNotifications {
+  /**
+   * Task IDs the server has agreed to send status notifications for.
+   */
+  tasksStatus?: string[];
 }
 
-/* Tool-Level Task Support */
+/* Extension Capability */
 
 /**
- * Task support declaration for individual tools.
- * Include this in the tool's definition returned by tools/list.
- *
- * - "forbidden": Tool does not support task-augmented execution (default when absent)
- * - "optional": Tool may support task-augmented execution
- * - "required": Tool requires task-augmented execution
+ * The extension capability declaration for the tasks extension.
+ * An empty object indicates support; no extension-specific settings are currently defined.
  *
  * @category `tasks`
  */
-export type ToolTaskSupport = "forbidden" | "optional" | "required";
+export type TasksExtensionCapability = Record<string, never>;
