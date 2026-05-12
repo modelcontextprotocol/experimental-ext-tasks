@@ -12,8 +12,14 @@
  */
 
 import type {
+  CreateMessageRequest,
+  CreateMessageResult,
+  ElicitRequest,
+  ElicitResult,
   JSONRPCNotification,
   JSONRPCRequest,
+  ListRootsRequest,
+  ListRootsResult,
   NotificationParams,
   Result,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -103,17 +109,21 @@ export interface WorkingTask extends Task {
  * @category `tasks`
  */
 // TODO: Import from SDK once updated for MRTR
-export interface InputRequest {
-  /**
-   * The JSON-RPC method for the server-to-client request.
-   */
-  method: string;
+export type InputRequest =
+  | CreateMessageRequest
+  | ListRootsRequest
+  | ElicitRequest;
 
-  /**
-   * Parameters for the server-to-client request.
-   */
-  params: { [key: string]: unknown };
-}
+/**
+ * A single input response from the client to the server during task execution.
+ *
+ * @category `tasks`
+ */
+// TODO: Import from SDK once updated for MRTR
+export type InputResponse =
+  | CreateMessageResult
+  | ListRootsResult
+  | ElicitResult;
 
 /**
  * Outstanding server-to-client requests that need to be fulfilled during task execution.
@@ -123,7 +133,9 @@ export interface InputRequest {
  * @category `tasks`
  */
 // TODO: Import from SDK once updated for MRTR
-export type InputRequests = Record<string, InputRequest>;
+export interface InputRequests {
+  [key: string]: InputRequest;
+}
 
 /**
  * Client responses to outstanding input requests. Each key MUST correspond to a
@@ -132,7 +144,9 @@ export type InputRequests = Record<string, InputRequest>;
  * @category `tasks`
  */
 // TODO: Import from SDK once updated for MRTR
-export type InputResponses = Record<string, { [key: string]: unknown }>;
+export interface InputResponses {
+  [key: string]: InputResponse;
+}
 
 /**
  * A task that is waiting for input from the client.

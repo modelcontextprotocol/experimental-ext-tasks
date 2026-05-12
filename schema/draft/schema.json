@@ -366,24 +366,11 @@
                 "type": "string"
               },
               "additionalProperties": {
-                "type": "object",
-                "properties": {
-                  "method": {
-                    "type": "string"
-                  },
-                  "params": {
-                    "type": "object",
-                    "propertyNames": {
-                      "type": "string"
-                    },
-                    "additionalProperties": {}
-                  }
-                },
-                "required": [
-                  "method",
-                  "params"
-                ],
-                "additionalProperties": false
+                "anyOf": [
+                  {},
+                  {},
+                  {}
+                ]
               }
             }
           },
@@ -758,24 +745,11 @@
                     "type": "string"
                   },
                   "additionalProperties": {
-                    "type": "object",
-                    "properties": {
-                      "method": {
-                        "type": "string"
-                      },
-                      "params": {
-                        "type": "object",
-                        "propertyNames": {
-                          "type": "string"
-                        },
-                        "additionalProperties": {}
-                      }
-                    },
-                    "required": [
-                      "method",
-                      "params"
-                    ],
-                    "additionalProperties": false
+                    "anyOf": [
+                      {},
+                      {},
+                      {}
+                    ]
                   }
                 }
               },
@@ -937,24 +911,11 @@
     },
     "InputRequest": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "type": "object",
-      "properties": {
-        "method": {
-          "type": "string"
-        },
-        "params": {
-          "type": "object",
-          "propertyNames": {
-            "type": "string"
-          },
-          "additionalProperties": {}
-        }
-      },
-      "required": [
-        "method",
-        "params"
-      ],
-      "additionalProperties": false
+      "anyOf": [
+        {},
+        {},
+        {}
+      ]
     },
     "InputRequests": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -963,24 +924,11 @@
         "type": "string"
       },
       "additionalProperties": {
-        "type": "object",
-        "properties": {
-          "method": {
-            "type": "string"
-          },
-          "params": {
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {}
-          }
-        },
-        "required": [
-          "method",
-          "params"
-        ],
-        "additionalProperties": false
+        "anyOf": [
+          {},
+          {},
+          {}
+        ]
       }
     },
     "InputRequiredTask": {
@@ -1022,24 +970,11 @@
             "type": "string"
           },
           "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "method": {
-                "type": "string"
-              },
-              "params": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
-              }
-            },
-            "required": [
-              "method",
-              "params"
-            ],
-            "additionalProperties": false
+            "anyOf": [
+              {},
+              {},
+              {}
+            ]
           }
         }
       },
@@ -1053,6 +988,14 @@
       ],
       "additionalProperties": false
     },
+    "InputResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {},
+        {},
+        {}
+      ]
+    },
     "InputResponses": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -1060,11 +1003,11 @@
         "type": "string"
       },
       "additionalProperties": {
-        "type": "object",
-        "propertyNames": {
-          "type": "string"
-        },
-        "additionalProperties": {}
+        "anyOf": [
+          {},
+          {},
+          {}
+        ]
       }
     },
     "Task": {
@@ -1228,24 +1171,11 @@
                     "type": "string"
                   },
                   "additionalProperties": {
-                    "type": "object",
-                    "properties": {
-                      "method": {
-                        "type": "string"
-                      },
-                      "params": {
-                        "type": "object",
-                        "propertyNames": {
-                          "type": "string"
-                        },
-                        "additionalProperties": {}
-                      }
-                    },
-                    "required": [
-                      "method",
-                      "params"
-                    ],
-                    "additionalProperties": false
+                    "anyOf": [
+                      {},
+                      {},
+                      {}
+                    ]
                   }
                 }
               },
@@ -1521,24 +1451,11 @@
                         "type": "string"
                       },
                       "additionalProperties": {
-                        "type": "object",
-                        "properties": {
-                          "method": {
-                            "type": "string"
-                          },
-                          "params": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string"
-                            },
-                            "additionalProperties": {}
-                          }
-                        },
-                        "required": [
-                          "method",
-                          "params"
-                        ],
-                        "additionalProperties": false
+                        "anyOf": [
+                          {},
+                          {},
+                          {}
+                        ]
                       }
                     }
                   },
@@ -1810,11 +1727,11 @@
                 "type": "string"
               },
               "additionalProperties": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
+                "anyOf": [
+                  {},
+                  {},
+                  {}
+                ]
               }
             }
           },
