@@ -95,7 +95,7 @@ export interface Task {
 
 /**
  * A task that is in a normal working state.
- * Used by tasks/get and notifications/tasks/status.
+ * Used by tasks/get and notifications/tasks.
  *
  * @category `tasks`
  */
@@ -150,7 +150,7 @@ export interface InputResponses {
 
 /**
  * A task that is waiting for input from the client.
- * Used by tasks/get and notifications/tasks/status.
+ * Used by tasks/get and notifications/tasks.
  *
  * @category `tasks`
  */
@@ -166,7 +166,7 @@ export interface InputRequiredTask extends Task {
 
 /**
  * A task that has completed successfully.
- * Used by tasks/get and notifications/tasks/status.
+ * Used by tasks/get and notifications/tasks.
  *
  * @category `tasks`
  */
@@ -183,7 +183,7 @@ export interface CompletedTask extends Task {
 
 /**
  * A task that has failed due to a JSON-RPC error during execution.
- * Used by tasks/get and notifications/tasks/status.
+ * Used by tasks/get and notifications/tasks.
  *
  * @category `tasks`
  */
@@ -198,7 +198,7 @@ export interface FailedTask extends Task {
 
 /**
  * A task that has been cancelled.
- * Used by tasks/get and notifications/tasks/status.
+ * Used by tasks/get and notifications/tasks.
  *
  * @category `tasks`
  */
@@ -208,7 +208,7 @@ export interface CancelledTask extends Task {
 
 /**
  * A union type representing a task with status-specific fields inlined.
- * This type is used by tasks/get responses and notifications/tasks/status
+ * This type is used by tasks/get responses and notifications/tasks
  * notifications to provide complete task state including terminal results
  * or pending input requests.
  *
@@ -314,10 +314,10 @@ export type CancelTaskResult = Result;
 /* Task Notifications */
 
 /**
- * Parameters for a `notifications/tasks/status` notification.
+ * Parameters for a `notifications/tasks` notification.
  * Carries a complete DetailedTask for the current status.
  *
- * @category `notifications/tasks/status`
+ * @category `notifications/tasks`
  */
 export type TaskStatusNotificationParams = NotificationParams &
   DetailedTask & { [key: string]: unknown };
@@ -327,10 +327,10 @@ export type TaskStatusNotificationParams = NotificationParams &
  * a task's status has changed. Servers are not required to send these notifications.
  * Clients subscribe via subscriptions/listen.
  *
- * @category `notifications/tasks/status`
+ * @category `notifications/tasks`
  */
 export interface TaskStatusNotification extends JSONRPCNotification {
-  method: "notifications/tasks/status";
+  method: "notifications/tasks";
   params: TaskStatusNotificationParams;
 }
 
@@ -338,16 +338,16 @@ export interface TaskStatusNotification extends JSONRPCNotification {
 
 /**
  * Task-specific fields for the subscriptions/listen request.
- * Clients include tasksStatus to subscribe to notifications/tasks/status
+ * Clients include tasksStatus to subscribe to notifications/tasks
  * for specific task IDs.
  *
  * @category `subscriptions`
  */
 export interface TaskSubscriptionNotifications {
   /**
-   * Subscribe to notifications/tasks/status for specific task IDs.
+   * Subscribe to notifications/tasks for specific task IDs.
    */
-  tasksStatus?: string[];
+  taskIds?: string[];
 }
 
 /**
@@ -360,7 +360,7 @@ export interface TaskSubscriptionAcknowledgedNotifications {
   /**
    * Task IDs the server has agreed to send status notifications for.
    */
-  tasksStatus?: string[];
+  taskIds?: string[];
 }
 
 /* Extension Capability */

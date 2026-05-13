@@ -184,7 +184,7 @@ See the [specification](./specification/draft/tasks.mdx) for the full `tasks/upd
 
 Clients send `tasks/cancel` to signal cancellation intent. The server acks with an empty result — cancellation is cooperative, and the task may still reach a non-`cancelled` terminal status.
 
-Servers may also push status updates via `notifications/tasks/status`, which clients opt into through `subscriptions/listen`. Each notification carries the full task state, identical to a `tasks/get` response.
+Servers may also push status updates via `notifications/tasks`, which clients opt into through `subscriptions/listen`. Each notification carries the full task state, identical to a `tasks/get` response.
 
 See the [specification](./specification/draft/tasks.mdx) for details on both mechanisms.
 
