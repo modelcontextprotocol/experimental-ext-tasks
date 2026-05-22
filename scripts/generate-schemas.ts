@@ -107,54 +107,37 @@ async function main() {
   );
   schemasContent = postProcess(schemasContent);
 
+  // Ensure generated directory exists. Required in both modes because check
+  // mode writes a temp file here for dynamic import (its relative imports
+  // resolve against this directory).
+  mkdirSync(GENERATED_DIR, { recursive: true });
+
   if (isCheck) {
-    // Check mode: compare generated output against existing files
+    // Check mode: only schema.json is tracked in git (generated/ is gitignored
+    // as an intermediate artifact). We verify the committed schema.json matches
+    // what would be regenerated from schema.ts.
     let hasChanges = false;
 
-    if (existsSync(SCHEMA_OUTPUT_FILE)) {
-      const existing = readFileSync(SCHEMA_OUTPUT_FILE, "utf-8");
-      if (existing !== schemasContent) {
+    // Write the freshly generated Zod schemas to disk so we can dynamic-import
+    // them. This file is gitignored, so writing it is not a check concern.
+    writeFileSync(SCHEMA_OUTPUT_FILE, schemasContent, "utf-8");
+    const jsonSchemaContent = await generateJsonSchemaContent(SCHEMA_OUTPUT_FILE);
+
+    if (existsSync(JSON_SCHEMA_OUTPUT_FILE)) {
+      const existing = readFileSync(JSON_SCHEMA_OUTPUT_FILE, "utf-8");
+      if (existing !== jsonSchemaContent) {
         console.error(
-          "❌ Generated Zod schemas are out of date. Run: npm run generate:schemas"
+          "❌ JSON Schema is out of date. Run: npm run generate:schemas"
         );
         hasChanges = true;
       } else {
-        console.log("  ✓ Zod schemas are up to date");
+        console.log("  ✓ JSON Schema is up to date");
       }
     } else {
       console.error(
-        "❌ Generated Zod schemas file does not exist. Run: npm run generate:schemas"
+        "❌ JSON Schema file does not exist. Run: npm run generate:schemas"
       );
       hasChanges = true;
-    }
-
-    // Write temp file to generate JSON Schema for comparison
-    const tempFile = SCHEMA_OUTPUT_FILE + ".check.ts";
-    writeFileSync(tempFile, schemasContent, "utf-8");
-    try {
-      const jsonSchemaContent = await generateJsonSchemaContent(tempFile);
-      if (existsSync(JSON_SCHEMA_OUTPUT_FILE)) {
-        const existing = readFileSync(JSON_SCHEMA_OUTPUT_FILE, "utf-8");
-        if (existing !== jsonSchemaContent) {
-          console.error(
-            "❌ JSON Schema is out of date. Run: npm run generate:schemas"
-          );
-          hasChanges = true;
-        } else {
-          console.log("  ✓ JSON Schema is up to date");
-        }
-      } else {
-        console.error(
-          "❌ JSON Schema file does not exist. Run: npm run generate:schemas"
-        );
-        hasChanges = true;
-      }
-    } finally {
-      // Clean up temp file
-      const { unlinkSync } = await import("node:fs");
-      try {
-        unlinkSync(tempFile);
-      } catch {}
     }
 
     if (hasChanges) {
@@ -163,9 +146,6 @@ async function main() {
     console.log("\nAll schemas are up to date!");
     return;
   }
-
-  // Ensure generated directory exists
-  mkdirSync(GENERATED_DIR, { recursive: true });
 
   // Write Zod schemas
   writeFileSync(SCHEMA_OUTPUT_FILE, schemasContent, "utf-8");
