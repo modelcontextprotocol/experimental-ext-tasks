@@ -13,4 +13,4 @@ Please see the [MCP Contributing Guidelines](https://github.com/modelcontextprot
 ## License
 
 By contributing, you agree that your contributions will be licensed under the Apache License 2.0.
-See the [LICENSE](LICENSE) file for details.
+See the [LICENSE](https://github.com/modelcontextprotocol/ext-tasks/blob/main/LICENSE) file for details.

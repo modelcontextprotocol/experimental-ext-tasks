@@ -2,17 +2,15 @@
 title: Tasks
 ---
 
-<div id="enable-section-numbers" />
+# Tasks
 
-<Note>
-
+::: tip Note
 **This document is part of the Tasks extension (`io.modelcontextprotocol/tasks`).**
 
 This extension allows a server to respond to a `tools/call` request with an asynchronous _task handle_ instead of a final result, allowing the client to retrieve the eventual result by polling. The extension introduces three methods: `tasks/get`, `tasks/update`, and `tasks/cancel`; a polymorphic-result discriminator (`resultType: "task"`); and a `Task` shape that carries a task status, in-progress server-to-client requests, and a final result or error.
 
 Task creation is server-directed: the client signals support by including the extension in its per-request capabilities, and the server decides on a per-request basis whether to materialize a task.
-
-</Note>
+:::
 
 The Model Context Protocol (MCP) Tasks extension allows certain requests to be augmented with **tasks**. Tasks are durable state machines that carry information about the underlying execution state of the request they augment, and are intended for client polling and deferred result retrieval. Each task is uniquely identifiable by a server-generated **task ID**.
 
@@ -589,11 +587,9 @@ On each request while the task is in a `"working"` status, the server returns a 
 
 Eventually, the server reaches the point at which it needs to send an elicitation to the user. It sets the task status to `"input_required"` to signal this. On the next `tasks/get` request from the client, the server sends the elicitation payload via the `inputRequests` field.
 
-<Note>
-
+::: tip Note
 While task `inputRequests` share structural similarities with multi round-trip requests, they are a distinct mechanism: task `inputRequests` are surfaced via `tasks/get` and fulfilled via `tasks/update`, not via retries of the original method. A server that needs client input _before_ returning a `CreateTaskResult` (e.g. to decide whether to proceed) uses the multi round-trip request flow on the original request; a server that needs client input _during_ task execution uses the `inputRequests`/`inputResponses` mechanism described here.
-
-</Note>
+:::
 
 ```json
 {
@@ -830,11 +826,9 @@ Servers **SHOULD** provide informative error messages to describe the cause of e
 }
 ```
 
-<Note>
-
+::: tip Note
 Servers are not required to retain tasks indefinitely. It is compliant behavior for a server to return an error stating the task cannot be found if it has purged an expired task.
-
-</Note>
+:::
 
 ### Task Execution Errors
 

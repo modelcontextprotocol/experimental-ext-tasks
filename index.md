@@ -1,10 +1,9 @@
 ---
 title: Overview
-group: Getting Started
 description: MCP Tasks lets servers return durable poll handles instead of blocking on long-running tool calls. Clients poll for progress, provide mid-flight input, and retrieve results after reconnecting.
 ---
 
-# MCP Tasks Overview
+# Overview
 
 MCP Tasks is an extension to the Model Context Protocol. Servers return a durable task handle instead of blocking on a long-running operation; clients poll for progress and retrieve the result when ready.
 
@@ -178,7 +177,7 @@ When a task needs client input, it transitions to `input_required` and the `task
 
 Each key in `inputRequests` is unique over the lifetime of a task. The server may accept partial responses; the task remains `input_required` until all arrive. Reads (`tasks/get`) and writes (`tasks/update`) are separate to keep reads idempotent and cacheable.
 
-See the [specification](./specification/draft/tasks.mdx) for the full `tasks/update` request shape and consistency semantics.
+See the [specification](./specification/draft/tasks) for the full `tasks/update` request shape and consistency semantics.
 
 ## Cancellation and Notifications
 
@@ -186,7 +185,7 @@ Clients send `tasks/cancel` to signal cancellation intent. The server acks with 
 
 Servers may also push status updates via `notifications/tasks`, which clients opt into through `subscriptions/listen`. Each notification carries the full task state, identical to a `tasks/get` response.
 
-See the [specification](./specification/draft/tasks.mdx) for details on both mechanisms.
+See the [specification](./specification/draft/tasks) for details on both mechanisms.
 
 ## Security
 
@@ -202,6 +201,6 @@ Task-augmented execution is currently supported for:
 
 ## Learn More
 
-- [Specification](./specification/draft/tasks.mdx) — Full protocol specification
-- [SEP-2663](../seps/2663-tasks-extension.md) — The proposal defining this extension
-- [Schema](../schema/) — TypeScript types and generated JSON Schema
+- [Specification](./specification/draft/tasks) — Full protocol specification
+- [SEP-2663](./seps/2663-tasks-extension.md) — The proposal defining this extension
+- [Schema](https://github.com/modelcontextprotocol/ext-tasks/tree/main/schema) — TypeScript types and generated JSON Schema

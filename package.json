@@ -1,21 +1,27 @@
 {
-  "name": "@modelcontextprotocol/experimental-ext-tasks",
+  "name": "@modelcontextprotocol/ext-tasks",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "MCP Tasks Extension - Experimental extension for task management in the Model Context Protocol",
+  "description": "MCP Tasks Extension - extension for task management in the Model Context Protocol",
   "license": "Apache-2.0",
   "scripts": {
     "generate:schemas": "tsx scripts/generate-schemas.ts",
     "check:schema": "npm run check:schema:ts && npm run check:schema:json",
     "check:schema:ts": "tsc --noEmit",
-    "check:schema:json": "tsx scripts/generate-schemas.ts --check"
+    "check:schema:json": "tsx scripts/generate-schemas.ts --check",
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "mermaid": "^11.15.0",
     "ts-to-zod": "^5.1.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0",
+    "vitepress": "^1.6.4",
+    "vitepress-plugin-mermaid": "^2.0.17",
     "zod": "^4.4.3"
   }
 }

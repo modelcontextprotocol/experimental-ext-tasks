@@ -7,3 +7,5 @@ node_modules/
 *.tsbuildinfo
 dist/
 schema/**/generated/
+.vitepress/cache
+.vitepress/dist
