@@ -1,6 +1,6 @@
 # Tasks Extension Maintainers
 
-This document lists the maintainers of the MCP Tasks experimental extension.
+This document lists the maintainers of the MCP Tasks extension.
 
 This extension is maintained by the **Agents Working Group**.
 
