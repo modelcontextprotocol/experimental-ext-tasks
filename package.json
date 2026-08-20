@@ -16,7 +16,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "mermaid": "^11.15.0",
+    "mermaid": "^11.17.0",
     "ts-to-zod": "^5.1.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0",
