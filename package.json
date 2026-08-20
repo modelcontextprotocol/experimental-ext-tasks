@@ -7,6 +7,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "generate:schemas": "tsx scripts/generate-schemas.ts",
+    "fetch:spec-schema": "tsx scripts/fetch-spec-schema.ts",
     "check:schema": "npm run check:schema:ts && npm run check:schema:json",
     "check:schema:ts": "tsc --noEmit",
     "check:schema:json": "tsx scripts/generate-schemas.ts --check",
@@ -15,7 +16,6 @@
     "docs:preview": "vitepress preview"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "mermaid": "^11.17.0",
     "ts-to-zod": "^5.1.0",
     "tsx": "^4.21.0",

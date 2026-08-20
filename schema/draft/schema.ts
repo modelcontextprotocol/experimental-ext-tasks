@@ -12,17 +12,14 @@
  */
 
 import type {
-  CreateMessageRequest,
-  CreateMessageResult,
-  ElicitRequest,
-  ElicitResult,
+  Error as JSONRPCErrorObject,
+  InputRequests,
+  InputResponses,
   JSONRPCNotification,
   JSONRPCRequest,
-  ListRootsRequest,
-  ListRootsResult,
   NotificationParams,
   Result,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "./spec.types.js";
 
 /* Tasks */
 
@@ -79,6 +76,7 @@ export interface Task {
    * Time-to-live duration from creation in integer milliseconds, null for unlimited.
    * The server may discard the task after the TTL elapses. This value MAY change
    * over the lifetime of a task.
+   * @format int
    * @nullable
    */
   ttlMs: number | null;
@@ -87,6 +85,7 @@ export interface Task {
    * Suggested polling interval in integer milliseconds. Clients SHOULD honor
    * this value to avoid overwhelming the server. This value MAY change over
    * the lifetime of a task.
+   * @format int
    */
   pollIntervalMs?: number;
 }
@@ -101,51 +100,6 @@ export interface Task {
  */
 export interface WorkingTask extends Task {
   status: "working";
-}
-
-/**
- * A single input request from the server to the client during task execution.
- *
- * @category `tasks`
- */
-// TODO: Import from SDK once updated for MRTR
-export type InputRequest =
-  | CreateMessageRequest
-  | ListRootsRequest
-  | ElicitRequest;
-
-/**
- * A single input response from the client to the server during task execution.
- *
- * @category `tasks`
- */
-// TODO: Import from SDK once updated for MRTR
-export type InputResponse =
-  | CreateMessageResult
-  | ListRootsResult
-  | ElicitResult;
-
-/**
- * Outstanding server-to-client requests that need to be fulfilled during task execution.
- * Keys are arbitrary identifiers for matching requests to responses. Each key MUST be
- * unique over the lifetime of a single task.
- *
- * @category `tasks`
- */
-// TODO: Import from SDK once updated for MRTR
-export interface InputRequests {
-  [key: string]: InputRequest;
-}
-
-/**
- * Client responses to outstanding input requests. Each key MUST correspond to a
- * currently-outstanding inputRequest key.
- *
- * @category `tasks`
- */
-// TODO: Import from SDK once updated for MRTR
-export interface InputResponses {
-  [key: string]: InputResponse;
 }
 
 /**
@@ -193,7 +147,7 @@ export interface FailedTask extends Task {
   /**
    * The JSON-RPC error that caused the task to fail.
    */
-  error: { [key: string]: unknown };
+  error: JSONRPCErrorObject;
 }
 
 /**
@@ -230,7 +184,13 @@ export type DetailedTask =
  *
  * @category `tasks`
  */
-export type CreateTaskResult = Result & Task;
+export type CreateTaskResult = Result &
+  Task & {
+    /**
+     * Discriminator distinguishing a task handle from a standard result.
+     */
+    resultType: "task";
+  };
 
 /* Task Operations */
 
@@ -239,7 +199,7 @@ export type CreateTaskResult = Result & Task;
  *
  * @category `tasks/get`
  */
-export interface GetTaskRequest extends JSONRPCRequest {
+export type GetTaskRequest = JSONRPCRequest & {
   method: "tasks/get";
   params: {
     /**
@@ -247,7 +207,7 @@ export interface GetTaskRequest extends JSONRPCRequest {
      */
     taskId: string;
   };
-}
+};
 
 /**
  * The response to a tasks/get request. Carries the appropriate DetailedTask
@@ -256,14 +216,20 @@ export interface GetTaskRequest extends JSONRPCRequest {
  *
  * @category `tasks/get`
  */
-export type GetTaskResult = Result & DetailedTask;
+export type GetTaskResult = Result &
+  DetailedTask & {
+    /**
+     * Discriminator marking this as the standard result shape for tasks/get.
+     */
+    resultType: "complete";
+  };
 
 /**
  * A request to provide input responses to a task in the input_required state.
  *
  * @category `tasks/update`
  */
-export interface UpdateTaskRequest extends JSONRPCRequest {
+export type UpdateTaskRequest = JSONRPCRequest & {
   method: "tasks/update";
   params: {
     /**
@@ -277,7 +243,7 @@ export interface UpdateTaskRequest extends JSONRPCRequest {
      */
     inputResponses: InputResponses;
   };
-}
+};
 
 /**
  * The response to a tasks/update request. An empty acknowledgement.
@@ -285,14 +251,19 @@ export interface UpdateTaskRequest extends JSONRPCRequest {
  *
  * @category `tasks/update`
  */
-export type UpdateTaskResult = Result;
+export type UpdateTaskResult = Result & {
+  /**
+   * Discriminator marking this as the standard result shape for tasks/update.
+   */
+  resultType: "complete";
+};
 
 /**
  * A request to cancel a task.
  *
  * @category `tasks/cancel`
  */
-export interface CancelTaskRequest extends JSONRPCRequest {
+export type CancelTaskRequest = JSONRPCRequest & {
   method: "tasks/cancel";
   params: {
     /**
@@ -300,7 +271,7 @@ export interface CancelTaskRequest extends JSONRPCRequest {
      */
     taskId: string;
   };
-}
+};
 
 /**
  * The response to a tasks/cancel request. An empty acknowledgement.
@@ -309,7 +280,12 @@ export interface CancelTaskRequest extends JSONRPCRequest {
  *
  * @category `tasks/cancel`
  */
-export type CancelTaskResult = Result;
+export type CancelTaskResult = Result & {
+  /**
+   * Discriminator marking this as the standard result shape for tasks/cancel.
+   */
+  resultType: "complete";
+};
 
 /* Task Notifications */
 
@@ -329,10 +305,10 @@ export type TaskStatusNotificationParams = NotificationParams &
  *
  * @category `notifications/tasks`
  */
-export interface TaskStatusNotification extends JSONRPCNotification {
+export type TaskStatusNotification = JSONRPCNotification & {
   method: "notifications/tasks";
   params: TaskStatusNotificationParams;
-}
+};
 
 /* Subscription Additions */
 
