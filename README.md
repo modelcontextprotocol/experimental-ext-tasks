@@ -13,17 +13,30 @@ Tasks are useful for:
 
 **Extension Identifier:** `io.modelcontextprotocol/tasks`
 
+## Schemas
+
+| Version | Status | TypeScript | JSON Schema |
+| --- | --- | --- | --- |
+| `2026-07-28` | Stable | [`schema.ts`](schema/2026-07-28/schema.ts) | [`schema.json`](schema/2026-07-28/schema.json) |
+| `draft` | Development | [`schema.ts`](schema/draft/schema.ts) | [`schema.json`](schema/draft/schema.json) |
+
+Released schema directories are immutable snapshots with version-specific JSON Schema identifiers. Development and schema generation target `schema/draft/` only. To create a release snapshot from the current draft:
+
+```bash
+npm run snapshot:schema -- YYYY-MM-DD
+```
+
 ## Development
 
 ### Schema Generation
 
-The JSON Schema is auto-generated from the TypeScript type definitions using [ts-to-zod](https://github.com/fabien0102/ts-to-zod) and Zod's `toJSONSchema()`. Do not hand-edit `schema.json` or `generated/schema.ts`.
+The draft JSON Schema is auto-generated from the TypeScript type definitions using [ts-to-zod](https://github.com/fabien0102/ts-to-zod) and Zod's `toJSONSchema()`. Do not hand-edit `schema.json` or `generated/schema.ts`.
 
 ```bash
-# Generate Zod schemas and JSON Schema from schema.ts
+# Generate draft Zod schemas and JSON Schema from schema.ts
 npm run generate:schemas
 
-# Verify TypeScript compiles and generated files are up to date
+# Verify TypeScript compiles and draft generated files are up to date
 npm run check:schema
 
 ```

@@ -6,8 +6,9 @@ Please see the [MCP Contributing Guidelines](https://github.com/modelcontextprot
 
 ## Extension-Specific Notes
 
-- The Tasks extension specification lives in `docs/specification/`
-- Schema types live in `schema/draft/`
+- The Tasks extension specification lives in `specification/`
+- Schema development and generation target `schema/draft/`
+- Released schemas live in date-versioned directories under `schema/`; create them with `npm run snapshot:schema -- YYYY-MM-DD` and do not edit them afterward
 - Changes should be discussed in the **Agents Working Group** prior to submission
 
 ## License

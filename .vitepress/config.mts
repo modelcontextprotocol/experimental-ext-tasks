@@ -13,14 +13,20 @@ export default withMermaid(
 
       nav: [
         { text: "SEPs", link: "/seps/2663-tasks-extension" },
-        { text: "Specification", link: "/specification/draft/tasks" },
+        { text: "Specification", link: "/specification/2026-07-28/tasks" },
       ],
 
       sidebar: {
         "specification/": [
           {
             text: "Specification",
-            items: [{ text: "Draft", link: "/specification/draft/tasks" }],
+            items: [
+              {
+                text: "2026-07-28",
+                link: "/specification/2026-07-28/tasks",
+              },
+              { text: "Draft", link: "/specification/draft/tasks" },
+            ],
           },
         ],
         "seps/": [

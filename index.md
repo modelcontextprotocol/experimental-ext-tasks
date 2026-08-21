@@ -177,7 +177,7 @@ When a task needs client input, it transitions to `input_required` and the `task
 
 Each key in `inputRequests` is unique over the lifetime of a task. The server may accept partial responses; the task remains `input_required` until all arrive. Reads (`tasks/get`) and writes (`tasks/update`) are separate to keep reads idempotent and cacheable.
 
-See the [specification](./specification/draft/tasks) for the full `tasks/update` request shape and consistency semantics.
+See the [specification](./specification/2026-07-28/tasks) for the full `tasks/update` request shape and consistency semantics.
 
 ## Cancellation and Notifications
 
@@ -185,7 +185,7 @@ Clients send `tasks/cancel` to signal cancellation intent. The server acks with 
 
 Servers may also push status updates via `notifications/tasks`, which clients opt into through `subscriptions/listen`. Each notification carries the full task state, identical to a `tasks/get` response.
 
-See the [specification](./specification/draft/tasks) for details on both mechanisms.
+See the [specification](./specification/2026-07-28/tasks) for details on both mechanisms.
 
 ## Security
 
@@ -201,6 +201,6 @@ Task-augmented execution is currently supported for:
 
 ## Learn More
 
-- [Specification](./specification/draft/tasks) — Full protocol specification
+- [Specification](./specification/2026-07-28/tasks) — Full protocol specification
 - [SEP-2663](./seps/2663-tasks-extension.md) — The proposal defining this extension
-- [Schema](https://github.com/modelcontextprotocol/ext-tasks/tree/main/schema) — TypeScript types and generated JSON Schema
+- [Schema](https://github.com/modelcontextprotocol/ext-tasks/blob/main/schema/2026-07-28/schema.json) — Stable `2026-07-28` JSON Schema ([Draft](https://github.com/modelcontextprotocol/ext-tasks/blob/main/schema/draft/schema.json))
