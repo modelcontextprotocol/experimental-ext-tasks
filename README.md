@@ -28,6 +28,25 @@ npm run snapshot:schema -- YYYY-MM-DD
 
 ## Development
 
+### SDK Package
+
+The redistributable TypeScript package lives in `packages/ext-tasks`. It is an
+npm workspace that publishes as `@modelcontextprotocol/ext-tasks`.
+
+```bash
+# Type-check and build the package
+npm run check:package
+
+# Run the package tests in watch mode
+npm run test:watch
+
+# Create the publishable tarball
+npm run pack:package
+```
+
+The package intentionally has no root export. Consumers import `/core`,
+`/core/v1`, `/core/v2`, `/client`, or the reserved `/server` subpath.
+
 ### Schema Generation
 
 The draft JSON Schema is auto-generated from the TypeScript type definitions using [ts-to-zod](https://github.com/fabien0102/ts-to-zod) and Zod's `toJSONSchema()`. Do not hand-edit `schema.json` or `generated/schema.ts`.

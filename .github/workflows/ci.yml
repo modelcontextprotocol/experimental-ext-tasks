@@ -17,4 +17,5 @@ jobs:
       - run: npm ci
       - run: npm run check:schema:ts
       - run: npm run check:schema:json
+      - run: npm run check:package
       - run: npm run docs:build

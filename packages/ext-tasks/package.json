@@ -1,0 +1,84 @@
+{
+  "name": "@modelcontextprotocol/ext-tasks",
+  "version": "0.1.0",
+  "description": "Client and protocol support for MCP Tasks",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./core/v1": {
+      "types": "./dist/core/v1/index.d.ts",
+      "import": "./dist/core/v1/index.js"
+    },
+    "./core/v2": {
+      "types": "./dist/core/v2/index.d.ts",
+      "import": "./dist/core/v2/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "core": [
+        "dist/core/index.d.ts"
+      ],
+      "core/v1": [
+        "dist/core/v1/index.d.ts"
+      ],
+      "core/v2": [
+        "dist/core/v2/index.d.ts"
+      ],
+      "client": [
+        "dist/client/index.d.ts"
+      ],
+      "server": [
+        "dist/server/index.d.ts"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/client": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/modelcontextprotocol/ext-tasks.git",
+    "directory": "packages/ext-tasks"
+  },
+  "bugs": {
+    "url": "https://github.com/modelcontextprotocol/ext-tasks/issues"
+  },
+  "homepage": "https://github.com/modelcontextprotocol/ext-tasks#readme",
+  "scripts": {
+    "clean": "tsc -b tsconfig.json --clean",
+    "build": "npm run clean && tsc -b tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:exports": "node scripts/check-exports.mjs",
+    "check": "npm run typecheck && npm run test && npm run build && npm run check:exports",
+    "prepack": "npm run check"
+  }
+}
