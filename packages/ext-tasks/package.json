@@ -78,7 +78,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:exports": "node scripts/check-exports.mjs",
-    "check": "npm run typecheck && npm run test && npm run build && npm run check:exports",
+    "check:provenance": "node scripts/check-schema-provenance.mjs",
+    "check": "npm run check:provenance && npm run typecheck && npm run test && npm run build && npm run check:exports",
     "prepack": "npm run check"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "fast-check": "^4.9.0"
   }
 }
