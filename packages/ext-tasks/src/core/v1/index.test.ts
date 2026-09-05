@@ -57,15 +57,16 @@ const taskRequestArb = (
   });
 
 function expectRoundTrip(
-  codec: { parse(value: never): { success: boolean; value?: unknown } },
+  codec: { parse(value: unknown): { success: boolean; value?: unknown } },
   value: unknown,
 ): void {
-  const decoded = codec.parse(value as never);
+  const wireValue: unknown = JSON.parse(JSON.stringify(value));
+  const decoded = codec.parse(wireValue);
   expect(decoded.success).toBe(true);
-  if (decoded.success) expect(decoded.value).toEqual(value);
+  if (decoded.success) expect(decoded.value).toEqual(wireValue);
 }
 
-describe("V1 generated wire contracts", () => {
+describe("V1 runtime wire contracts", () => {
   it("round-trips Tasks and rejects missing fields, fractions, and unknown statuses", () => {
     fc.assert(
       fc.property(taskArb, (task) => {
@@ -104,12 +105,11 @@ describe("V1 generated wire contracts", () => {
           .double({ noNaN: true, noDefaultInfinity: true })
           .filter((n) => !Number.isInteger(n)),
         (task, fraction) => {
+          expect(TaskV1Codec.parse({ ...task, ttl: fraction }).success).toBe(
+            false,
+          );
           expect(
-            TaskV1Codec.parse({ ...task, ttl: fraction } as never).success,
-          ).toBe(false);
-          expect(
-            TaskV1Codec.parse({ ...task, pollInterval: fraction } as never)
-              .success,
+            TaskV1Codec.parse({ ...task, pollInterval: fraction }).success,
           ).toBe(false);
         },
       ),

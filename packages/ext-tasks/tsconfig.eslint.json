@@ -7,5 +7,5 @@
     "isolatedDeclarations": false,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "test-support/**/*.ts", "vitest.config.ts"]
 }

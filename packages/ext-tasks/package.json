@@ -26,10 +26,6 @@
     "./client": {
       "types": "./dist/client/index.d.ts",
       "import": "./dist/client/index.js"
-    },
-    "./server": {
-      "types": "./dist/server/index.d.ts",
-      "import": "./dist/server/index.js"
     }
   },
   "typesVersions": {
@@ -45,9 +41,6 @@
       ],
       "client": [
         "dist/client/index.d.ts"
-      ],
-      "server": [
-        "dist/server/index.d.ts"
       ]
     }
   },
@@ -81,9 +74,10 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "check:exports": "node scripts/check-exports.mjs",
+    "check:package": "node scripts/check-exports.mjs --pack",
     "check:provenance": "node scripts/check-schema-provenance.mjs",
     "check": "npm run check:provenance && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run check:exports",
-    "prepack": "npm run check"
+    "prepack": "npm run check && npm run check:package"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

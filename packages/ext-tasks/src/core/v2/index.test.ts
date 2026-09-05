@@ -1,7 +1,9 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import type { JsonValue } from "../index.js";
+import { ProtocolDecodeError, type JsonValue } from "../index.js";
+
+import * as coreV2 from "./index.js";
 
 import {
   CallToolResultV2Codec,
@@ -14,7 +16,9 @@ import {
   GetTaskResultV2Codec,
   InputRequestsV2Codec,
   InputResponsesV2Codec,
+  TaskStatusNotificationParamsV2Codec,
   TaskStatusNotificationV2Codec,
+  TasksExtensionCapabilityV2Codec,
   TaskV2Codec,
   ToolV2Codec,
   UpdateTaskRequestV2Codec,
@@ -22,9 +26,11 @@ import {
   contributeTaskFilterV2,
   hasTaskClientCapabilityV2,
   hasTaskServerCapabilityV2,
-  isEligibleTaskResultV2,
+  isToolCallTaskResultV2,
   readAcceptedTaskIdsV2,
   withTaskCapabilityV2,
+  type CallToolResultV2,
+  type TasksExtensionCapabilityV2,
   type TaskStatusV2,
 } from "./index.js";
 
@@ -49,7 +55,7 @@ const taskFor = (status: TaskStatusV2) =>
 const asJson = (value: unknown): JsonValue =>
   JSON.parse(JSON.stringify(value)) as JsonValue;
 
-describe("V2 generated wire contracts", () => {
+describe("V2 runtime wire contracts", () => {
   it("accepts every valid base Task and rejects missing required fields, invalid integers, and statuses", () => {
     fc.assert(
       fc.property(baseTask, (task) => {
@@ -99,6 +105,31 @@ describe("V2 generated wire contracts", () => {
         },
       ),
     );
+  });
+
+  it("keeps Task closed while preserving wrapper metadata", () => {
+    const decoded = TaskV2Codec.parse({
+      taskId: "task",
+      status: "working",
+      createdAt: "created",
+      lastUpdatedAt: "updated",
+      ttlMs: null,
+      vendorHint: 1,
+    });
+    expect(decoded.success).toBe(true);
+    if (decoded.success) expect("vendorHint" in decoded.value).toBe(false);
+
+    const notification = TaskStatusNotificationParamsV2Codec.parse({
+      taskId: "task",
+      status: "working",
+      createdAt: "created",
+      lastUpdatedAt: "updated",
+      ttlMs: null,
+      _meta: { vendorHint: 1 },
+    });
+    expect(notification.success).toBe(true);
+    if (notification.success)
+      expect(notification.value._meta).toEqual({ vendorHint: 1 });
   });
 
   it("enforces status-owned DetailedTask payloads", () => {
@@ -499,12 +530,10 @@ describe("V2 generated wire contracts", () => {
   it("discriminates Task creation only for eligible tools/call results", () => {
     fc.assert(
       fc.property(baseTask, (task) => {
-        const result = { ...task, resultType: "task" };
-        expect(CreateTaskResultV2Codec.parse(asJson(result)).success).toBe(
-          true,
-        );
-        expect(isEligibleTaskResultV2("tools/call", result)).toBe(true);
-        expect(isEligibleTaskResultV2("prompts/get", result)).toBe(false);
+        const result = asJson({ ...task, resultType: "task" });
+        expect(CreateTaskResultV2Codec.parse(result).success).toBe(true);
+        expect(isToolCallTaskResultV2("tools/call", result)).toBe(true);
+        expect(isToolCallTaskResultV2("prompts/get", result)).toBe(false);
       }),
     );
     expect(
@@ -533,6 +562,87 @@ describe("V2 generated wire contracts", () => {
         params: {},
       }).success,
     ).toBe(false);
+  });
+
+  it("preserves optional notification params _meta as a strict JSON record", () => {
+    fc.assert(
+      fc.property(
+        taskFor("working"),
+        fc.dictionary(fc.string(), fc.jsonValue()),
+        (task, meta) => {
+          const params = asJson({ ...task, _meta: meta });
+          const paramsResult =
+            TaskStatusNotificationParamsV2Codec.parse(params);
+          expect(paramsResult.success).toBe(true);
+          if (paramsResult.success)
+            expect(paramsResult.value._meta).toEqual(asJson(meta));
+
+          const notificationResult = TaskStatusNotificationV2Codec.parse({
+            jsonrpc: "2.0",
+            method: "notifications/tasks",
+            params,
+          });
+          expect(notificationResult.success).toBe(true);
+          if (notificationResult.success)
+            expect(notificationResult.value.params._meta).toEqual(asJson(meta));
+        },
+      ),
+    );
+
+    for (const meta of [null, [], "meta", 1, true] as const) {
+      const params = {
+        taskId: "task",
+        status: "working",
+        createdAt: "created",
+        lastUpdatedAt: "updated",
+        ttlMs: null,
+        _meta: meta,
+      };
+      const paramsResult = TaskStatusNotificationParamsV2Codec.parse(params);
+      expect(paramsResult.success).toBe(false);
+      if (!paramsResult.success) {
+        expect(paramsResult.error).toBeInstanceOf(ProtocolDecodeError);
+        expect(paramsResult.error.path).toEqual(["_meta"]);
+      }
+
+      const notificationResult = TaskStatusNotificationV2Codec.parse({
+        jsonrpc: "2.0",
+        method: "notifications/tasks",
+        params,
+      });
+      expect(notificationResult.success).toBe(false);
+      if (!notificationResult.success)
+        expect(notificationResult.error.path).toEqual(["params", "_meta"]);
+    }
+  });
+
+  it("exports only the canonical V2 task result and capability names", () => {
+    const capability: TasksExtensionCapabilityV2 = {};
+    const result: CallToolResultV2 = { resultType: "complete", content: [] };
+
+    expect(TasksExtensionCapabilityV2Codec.parse(capability)).toEqual({
+      success: true,
+      value: {},
+    });
+    expect(CallToolResultV2Codec.parse(result).success).toBe(true);
+    expect(
+      isToolCallTaskResultV2("tools/call", {
+        taskId: "task",
+        resultType: "task",
+        status: "working",
+        createdAt: "created",
+        lastUpdatedAt: "updated",
+        ttlMs: null,
+      }),
+    ).toBe(true);
+    for (const removed of [
+      "ToolCallResultV2Codec",
+      "isEligibleTaskResultV2",
+      "TaskExtensionCapabilitiesV2Codec",
+      "supportsTasksExtensionV2",
+    ]) {
+      expect(removed in coreV2).toBe(false);
+    }
   });
 
   it("contributes task IDs without changing unrelated filters or prior notification fields", () => {

@@ -34,8 +34,8 @@ The redistributable TypeScript package lives in `packages/ext-tasks`. It is an
 npm workspace that publishes as `@modelcontextprotocol/ext-tasks`.
 
 ```bash
-# Type-check and build the package
-npm run check:package
+# Run schema, package, and packed-consumer checks
+npm run check
 
 # Run the package tests in watch mode
 npm run test:watch
@@ -45,7 +45,7 @@ npm run pack:package
 ```
 
 The package intentionally has no root export. Consumers import `/core`,
-`/core/v1`, `/core/v2`, `/client`, or the reserved `/server` subpath.
+`/core/v1`, `/core/v2`, or `/client`.
 
 ### Schema Generation
 

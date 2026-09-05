@@ -1,8 +1,9 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   ProtocolDecodeError,
+  createRuntimeCodec,
   isJsonValue,
   taskId,
   type JsonValue,
@@ -45,6 +46,92 @@ describe("core runtime contracts", () => {
     const sparse: unknown[] = [];
     sparse.length = 1;
     expect(isJsonValue(sparse)).toBe(false);
+  });
+
+  it("rejects non-JSON inputs before invoking the decoder", () => {
+    const sparse: unknown[] = [];
+    sparse.length = 1;
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    class Exotic {}
+    const nonJsonValues: readonly unknown[] = [
+      undefined,
+      1n,
+      Symbol("x"),
+      () => undefined,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      new Date(),
+      new Map(),
+      sparse,
+      cyclic,
+      new Exotic(),
+      Object.create({ inherited: true }) as object,
+      /not-json/,
+    ];
+    const decode = vi.fn(() => "decoded");
+    const codec = createRuntimeCodec(decode);
+
+    for (const value of nonJsonValues) {
+      const result = codec.parse(value);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBeInstanceOf(ProtocolDecodeError);
+        expect(result.error.path).toEqual([]);
+      }
+    }
+    expect(decode).not.toHaveBeenCalled();
+  });
+
+  it("invokes the decoder for JSON values and starts it at the root path", () => {
+    const decode = vi.fn(
+      (value: JsonValue, path: readonly (string | number)[]) => ({
+        value,
+        path,
+      }),
+    );
+    const codec = createRuntimeCodec(decode);
+    const input = { nested: [null, true, 1, "value"] };
+    const result = codec.parse(input);
+
+    expect(result).toEqual({
+      success: true,
+      value: { value: input, path: [] },
+    });
+    expect(decode).toHaveBeenCalledTimes(1);
+    expect(decode).toHaveBeenCalledWith(input, []);
+  });
+
+  it("returns decoder ProtocolDecodeError instances unchanged with their paths", () => {
+    const error = new ProtocolDecodeError("expected string", [
+      "params",
+      "name",
+    ]);
+    const codec = createRuntimeCodec(() => {
+      throw error;
+    });
+
+    const result = codec.parse({});
+    expect(result).toEqual({ success: false, error });
+    if (!result.success) {
+      expect(result.error).toBe(error);
+      expect(result.error.path).toEqual(["params", "name"]);
+    }
+  });
+
+  it("rethrows unexpected decoder errors unchanged", () => {
+    const error = new Error("programmer failure");
+    const codec = createRuntimeCodec(() => {
+      throw error;
+    });
+
+    expect(() => codec.parse({})).toThrow(error);
+    try {
+      codec.parse({});
+    } catch (caught) {
+      expect(caught).toBe(error);
+    }
   });
 
   it("brands task identifiers without changing their wire value", () => {

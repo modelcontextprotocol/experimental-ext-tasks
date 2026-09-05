@@ -15,7 +15,6 @@ The public package subpaths are:
 - `@modelcontextprotocol/ext-tasks/core/v1`
 - `@modelcontextprotocol/ext-tasks/core/v2`
 - `@modelcontextprotocol/ext-tasks/client`
-- `@modelcontextprotocol/ext-tasks/server` (reserved for receiver-side support)
 
 Source is emitted as ESM JavaScript, TypeScript declarations, and source maps
 in `dist/`.

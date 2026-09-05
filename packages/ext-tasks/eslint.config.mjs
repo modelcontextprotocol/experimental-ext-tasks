@@ -9,7 +9,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
-    files: ["src/**/*.ts", "vitest.config.ts"],
+    files: ["src/**/*.ts", "test-support/**/*.ts", "vitest.config.ts"],
     languageOptions: {
       globals: globals.browser,
       parserOptions: {

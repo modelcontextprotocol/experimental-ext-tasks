@@ -11,8 +11,9 @@
   "scripts": {
     "build": "npm run build:package",
     "build:package": "npm run build --workspace @modelcontextprotocol/ext-tasks",
-    "check": "npm run check:schema && npm run check:package",
+    "check": "npm run check:schema && npm run check:package && npm run check:pack",
     "check:package": "npm run check --workspace @modelcontextprotocol/ext-tasks",
+    "check:pack": "npm run check:package --workspace @modelcontextprotocol/ext-tasks",
     "pack:package": "npm pack --workspace @modelcontextprotocol/ext-tasks",
     "test": "npm run test --workspace @modelcontextprotocol/ext-tasks",
     "test:watch": "npm run test:watch --workspace @modelcontextprotocol/ext-tasks",

@@ -15,7 +15,5 @@ jobs:
         with:
           node-version: "24"
       - run: npm ci
-      - run: npm run check:schema:ts
-      - run: npm run check:schema:json
-      - run: npm run check:package
+      - run: npm run check
       - run: npm run docs:build
