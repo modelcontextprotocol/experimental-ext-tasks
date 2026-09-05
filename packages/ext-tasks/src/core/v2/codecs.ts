@@ -4,13 +4,14 @@ import {
   createRuntimeCodec,
   expectEnum,
   expectInteger,
-  expectLiteral as expectConst,
+  expectLiteralProperty,
   expectNumber,
-  expectOptionalBoolean,
-  expectOptionalRecord as optionalRecord,
+  expectOptionalBooleanProperty,
+  expectOptionalRecordProperty,
   expectRecord,
+  expectRequiredRecord,
   expectString,
-  hasOwn as has,
+  hasOwn,
   isJsonArray,
   type DecodePath,
 } from "../internal/codec.js";
@@ -77,13 +78,6 @@ function optionalString(
   path: DecodePath,
 ): void {
   if (object[key] !== undefined) expectString(object[key], [...path, key]);
-}
-function optionalBoolean(
-  object: Record<string, JsonValue>,
-  key: string,
-  path: DecodePath,
-): void {
-  expectOptionalBoolean(object[key], [...path, key]);
 }
 function optionalStringArray(
   object: Record<string, JsonValue>,
@@ -178,10 +172,13 @@ function decodeContentBlock(
       );
     }
   } else {
-    const resource = expectRecord(object.resource, [...path, "resource"]);
+    const resource = expectRequiredRecord(object.resource, [
+      ...path,
+      "resource",
+    ]);
     expectString(resource.uri, [...path, "resource", "uri"]);
     optionalString(resource, "mimeType", [...path, "resource"]);
-    optionalRecord(resource._meta, [...path, "resource", "_meta"]);
+    expectOptionalRecordProperty(resource, "_meta", [...path, "resource"]);
     const hasText = resource.text !== undefined;
     const hasBlob = resource.blob !== undefined;
     if (!hasText && !hasBlob)
@@ -194,7 +191,7 @@ function decodeContentBlock(
   }
   if (object.annotations !== undefined)
     decodeAnnotations(object.annotations, [...path, "annotations"]);
-  optionalRecord(object._meta, [...path, "_meta"]);
+  expectOptionalRecordProperty(object, "_meta", path);
   return object as ContentBlockV2;
 }
 
@@ -207,7 +204,10 @@ function decodeTool(value: JsonValue, path: DecodePath): ToolV2 {
     ...path,
     "inputSchema",
   ]);
-  expectConst(inputSchema.type, "object", [...path, "inputSchema", "type"]);
+  expectLiteralProperty(inputSchema, "type", "object", [
+    ...path,
+    "inputSchema",
+  ]);
   optionalString(inputSchema, "$schema", [...path, "inputSchema"]);
   if (object.outputSchema !== undefined) {
     const outputSchema = expectRecord(object.outputSchema, [
@@ -228,7 +228,7 @@ function decodeTool(value: JsonValue, path: DecodePath): ToolV2 {
       "idempotentHint",
       "openWorldHint",
     ])
-      optionalBoolean(annotations, key, [...path, "annotations"]);
+      expectOptionalBooleanProperty(annotations, key, [...path, "annotations"]);
   }
   if (object.icons !== undefined) {
     if (!isJsonArray(object.icons))
@@ -237,7 +237,7 @@ function decodeTool(value: JsonValue, path: DecodePath): ToolV2 {
       decodeIcon(icon, [...path, "icons", index]),
     );
   }
-  optionalRecord(object._meta, [...path, "_meta"]);
+  expectOptionalRecordProperty(object, "_meta", path);
   return object as ToolV2;
 }
 
@@ -252,8 +252,8 @@ function decodeCallToolResult(
   object.content.forEach((block, index) =>
     decodeContentBlock(block, [...path, "content", index]),
   );
-  optionalBoolean(object, "isError", path);
-  const meta = optionalRecord(object._meta, [...path, "_meta"]);
+  expectOptionalBooleanProperty(object, "isError", path);
+  const meta = expectOptionalRecordProperty(object, "_meta", path);
   if (meta?.["io.modelcontextprotocol/serverInfo"] !== undefined) {
     decodeImplementation(meta["io.modelcontextprotocol/serverInfo"], [
       ...path,
@@ -267,7 +267,7 @@ function decodeCallToolResult(
 function decodeTask(value: JsonValue, path: DecodePath): TaskV2 {
   const object = expectRecord(value, path);
   const ttl = object.ttlMs;
-  if (!has(object, "ttlMs"))
+  if (!hasOwn(object, "ttlMs"))
     throw new ProtocolDecodeError("required field", [...path, "ttlMs"]);
   // Task is a closed wire shape; wrappers preserve extension data through `_meta`.
   const task: TaskV2 = {
@@ -304,7 +304,7 @@ function decodeError(value: JsonValue, path: DecodePath): ErrorV2 {
   return {
     code: expectInteger(object.code, [...path, "code"]),
     message: expectString(object.message, [...path, "message"]),
-    ...(has(object, "data") ? { data: object.data } : {}),
+    ...(hasOwn(object, "data") ? { data: object.data } : {}),
   };
 }
 
@@ -324,7 +324,7 @@ function decodeInputRequest(
   }
   return {
     method,
-    params: expectRecord(object.params, [...path, "params"]),
+    params: expectRequiredRecord(object.params, [...path, "params"]),
   };
 }
 function decodeInputRequests(
@@ -345,17 +345,17 @@ function decodeInputResponse(
   path: DecodePath,
 ): InputResponseV2 {
   const object = expectRecord(value, path);
-  if (has(object, "action")) {
+  if (hasOwn(object, "action")) {
     expectEnum(
       object.action,
       ["accept", "decline", "cancel"],
       [...path, "action"],
     );
-  } else if (has(object, "roots")) {
+  } else if (hasOwn(object, "roots")) {
     if (!Array.isArray(object.roots))
       throw new ProtocolDecodeError("expected array", [...path, "roots"]);
   } else {
-    if (!has(object, "content"))
+    if (!hasOwn(object, "content"))
       throw new ProtocolDecodeError("required field", [...path, "content"]);
     expectString(object.model, [...path, "model"]);
     expectEnum(object.role, ["user", "assistant"], [...path, "role"]);
@@ -395,7 +395,7 @@ function decodeDetailedTask(
       return {
         ...task,
         status: task.status,
-        result: expectRecord(object.result, [...path, "result"]),
+        result: expectRequiredRecord(object.result, [...path, "result"]),
       };
     case "failed":
       return {
@@ -412,18 +412,18 @@ function decodeDetailedTask(
 
 function decodeRpcRequest(value: JsonValue, path: DecodePath, method: string) {
   const object = expectRecord(value, path);
-  expectConst(object.jsonrpc, "2.0", [...path, "jsonrpc"]);
-  expectConst(object.method, method, [...path, "method"]);
+  expectLiteralProperty(object, "jsonrpc", "2.0", path);
+  expectLiteralProperty(object, "method", method, path);
   return {
     object,
     id: expectRequestId(object.id, [...path, "id"]),
-    params: expectRecord(object.params, [...path, "params"]),
+    params: expectRequiredRecord(object.params, [...path, "params"]),
   };
 }
 function decodeCompleteResult(value: JsonValue, path: DecodePath) {
   const object = expectRecord(value, path);
-  expectConst(object.resultType, "complete", [...path, "resultType"]);
-  optionalRecord(object._meta, [...path, "_meta"]);
+  expectLiteralProperty(object, "resultType", "complete", path);
+  expectOptionalRecordProperty(object, "_meta", path);
   return object;
 }
 
@@ -500,8 +500,8 @@ export const ElicitResultV2Codec: RuntimeCodec<ElicitResultV2> =
 export const CreateTaskResultV2Codec: RuntimeCodec<CreateTaskResultV2> =
   createRuntimeCodec<CreateTaskResultV2>((value, path) => {
     const object = expectRecord(value, path);
-    expectConst(object.resultType, "task", [...path, "resultType"]);
-    optionalRecord(object._meta, [...path, "_meta"]);
+    expectLiteralProperty(object, "resultType", "task", path);
+    expectOptionalRecordProperty(object, "_meta", path);
     return {
       ...decodeTask(value, path),
       resultType: "task",
@@ -651,8 +651,8 @@ export const TasksExtensionCapabilityV2Codec: RuntimeCodec<TasksExtensionCapabil
 export const TaskStatusNotificationV2Codec: RuntimeCodec<TaskStatusNotificationV2> =
   createRuntimeCodec<TaskStatusNotificationV2>((value, path) => {
     const object = expectRecord(value, path);
-    expectConst(object.jsonrpc, "2.0", [...path, "jsonrpc"]);
-    expectConst(object.method, "notifications/tasks", [...path, "method"]);
+    expectLiteralProperty(object, "jsonrpc", "2.0", path);
+    expectLiteralProperty(object, "method", "notifications/tasks", path);
     return {
       jsonrpc: "2.0",
       method: "notifications/tasks",

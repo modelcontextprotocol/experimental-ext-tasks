@@ -56,6 +56,17 @@ export function expectRecord(
   return value as Record<string, JsonValue>;
 }
 
+/** Requires a possibly absent value to be a JSON object. */
+export function expectRequiredRecord(
+  value: JsonValue | undefined,
+  path: DecodePath,
+): Record<string, JsonValue> {
+  if (value === undefined) {
+    throw new ProtocolDecodeError("expected object", path);
+  }
+  return expectRecord(value, path);
+}
+
 /** Requires a string at the supplied decode path. */
 export function expectString(
   value: JsonValue | undefined,
@@ -114,33 +125,41 @@ export function expectInteger(
   return number;
 }
 
-/** Requires a specific literal value at the supplied decode path. */
-export function expectLiteral(
-  value: JsonValue | undefined,
+/** Requires a specific literal-valued property on a decoded object. */
+export function expectLiteralProperty(
+  record: Readonly<Record<string, JsonValue>>,
+  key: string,
   expected: string | number | boolean | null,
   path: DecodePath,
 ): void {
-  if (value !== expected) {
-    throw new ProtocolDecodeError(`expected ${String(expected)}`, path);
+  const propertyPath = childPath(path, key);
+  if (record[key] !== expected) {
+    throw new ProtocolDecodeError(`expected ${String(expected)}`, propertyPath);
   }
 }
 
-/** Decodes an optional JSON object at the supplied path. */
-export function expectOptionalRecord(
-  value: JsonValue | undefined,
+/** Decodes an optional object-valued property on a decoded object. */
+export function expectOptionalRecordProperty(
+  record: Readonly<Record<string, JsonValue>>,
+  key: string,
   path: DecodePath,
 ): Record<string, JsonValue> | undefined {
-  return value === undefined ? undefined : expectRecord(value, path);
+  const value = record[key];
+  return value === undefined
+    ? undefined
+    : expectRecord(value, childPath(path, key));
 }
 
-/** Decodes an optional boolean at the supplied path. */
-export function expectOptionalBoolean(
-  value: JsonValue | undefined,
+/** Decodes an optional boolean-valued property on a decoded object. */
+export function expectOptionalBooleanProperty(
+  record: Readonly<Record<string, JsonValue>>,
+  key: string,
   path: DecodePath,
 ): boolean | undefined {
+  const value = record[key];
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") {
-    throw new ProtocolDecodeError("expected boolean", path);
+    throw new ProtocolDecodeError("expected boolean", childPath(path, key));
   }
   return value;
 }

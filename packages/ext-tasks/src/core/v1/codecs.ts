@@ -5,9 +5,11 @@ import {
   createRuntimeCodec,
   expectEnum,
   expectInteger,
-  expectLiteral,
-  expectOptionalBoolean,
+  expectLiteralProperty as literal,
+  expectOptionalBooleanProperty as optionalBoolean,
+  expectOptionalRecordProperty as optionalJsonRecord,
   expectRecord,
+  expectRequiredRecord as jsonRecord,
   expectString,
   isJsonArray,
   type DecodePath,
@@ -42,38 +44,6 @@ interface JsonRpcRequestV1<M extends string, P> {
   readonly params: P;
 }
 
-function optionalBoolean(
-  record: Record<string, JsonValue>,
-  key: string,
-  path: DecodePath,
-): boolean | undefined {
-  return expectOptionalBoolean(record[key], at(path, key));
-}
-function jsonRecord(
-  value: JsonValue | undefined,
-  path: DecodePath,
-): Readonly<Record<string, JsonValue>> {
-  if (value === undefined)
-    throw new ProtocolDecodeError("expected object", path);
-  return expectRecord(value, path);
-}
-function optionalJsonRecord(
-  record: Record<string, JsonValue>,
-  key: string,
-  path: DecodePath,
-) {
-  return record[key] === undefined
-    ? undefined
-    : jsonRecord(record[key], at(path, key));
-}
-function literal(
-  record: Record<string, JsonValue>,
-  key: string,
-  expected: string,
-  path: DecodePath,
-): void {
-  expectLiteral(record[key], expected, at(path, key));
-}
 function decodeId(
   value: JsonValue | undefined,
   path: DecodePath,
@@ -316,7 +286,7 @@ export const CallToolResultV1Codec: RuntimeCodec<CallToolResultV1> =
     );
     if (record.structuredContent !== undefined)
       jsonRecord(record.structuredContent, at(path, "structuredContent"));
-    if (record.isError !== undefined) optionalBoolean(record, "isError", path);
+    optionalBoolean(record, "isError", path);
     if (record._meta !== undefined) jsonRecord(record._meta, at(path, "_meta"));
     return record as unknown as CallToolResultV1;
   });
