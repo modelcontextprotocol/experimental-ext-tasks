@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "../index.js";
 
 import {
-  CancelTaskRequestV2Codec, CancelTaskResultV2Codec, CreateTaskResultV2Codec,
-  DetailedTaskV2Codec, ErrorV2Codec, GetTaskRequestV2Codec, GetTaskResultV2Codec,
-  InputRequestsV2Codec, InputResponsesV2Codec, TaskStatusNotificationV2Codec,
-  TaskV2Codec, UpdateTaskRequestV2Codec, UpdateTaskResultV2Codec,
+  CallToolResultV2Codec, CancelTaskRequestV2Codec, CancelTaskResultV2Codec,
+  CreateTaskResultV2Codec, DetailedTaskV2Codec, ErrorV2Codec, GetTaskRequestV2Codec,
+  GetTaskResultV2Codec, InputRequestsV2Codec, InputResponsesV2Codec,
+  TaskStatusNotificationV2Codec, TaskV2Codec, ToolV2Codec, UpdateTaskRequestV2Codec,
+  UpdateTaskResultV2Codec,
   contributeTaskFilterV2, hasTaskClientCapabilityV2, hasTaskServerCapabilityV2,
   isEligibleTaskResultV2, readAcceptedTaskIdsV2, withTaskCapabilityV2,
   type TaskStatusV2,
@@ -79,6 +80,61 @@ describe("V2 generated wire contracts", () => {
     }));
     expect(ErrorV2Codec.parse({ code: 1 }).success).toBe(false);
     expect(ErrorV2Codec.parse({ code: 1.5, message: "bad" }).success).toBe(false);
+  });
+
+  it("round-trips open ToolV2 objects while validating every declared field", () => {
+    fc.assert(fc.property(
+      fc.string(),
+      fc.dictionary(fc.string(), fc.jsonValue()),
+      fc.dictionary(fc.string(), fc.jsonValue()),
+      fc.dictionary(fc.string(), fc.jsonValue()),
+      (name, rootExtra, inputExtra, outputExtra) => {
+        const tool = asJson({
+          ...rootExtra,
+          name,
+          title: "Display name",
+          description: "Description",
+          inputSchema: { ...inputExtra, type: "object", $schema: "https://json-schema.org/draft/2020-12/schema" },
+          outputSchema: { ...outputExtra, $schema: "https://json-schema.org/draft/2020-12/schema" },
+          annotations: { title: "Annotated", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, extension: 1 },
+          icons: [{ src: "https://example.test/icon.png", mimeType: "image/png", sizes: ["16x16", "32x32"], theme: "dark", extension: true }],
+          _meta: { trace: "test" },
+        });
+        const parsed = ToolV2Codec.parse(tool);
+        expect(parsed.success).toBe(true);
+        if (parsed.success) expect(parsed.value).toEqual(tool);
+      },
+    ));
+    expect(ToolV2Codec.parse({ name: "x", inputSchema: {} }).success).toBe(false);
+    expect(ToolV2Codec.parse({ name: "x", inputSchema: { type: "array" } }).success).toBe(false);
+    for (const [field, invalid] of [["outputSchema", true], ["annotations", true], ["icons", true], ["_meta", true]] as const) {
+      expect(ToolV2Codec.parse({ name: "x", inputSchema: { type: "object" }, [field]: invalid }).success).toBe(false);
+    }
+    expect(ToolV2Codec.parse({ name: "x", inputSchema: { type: "object" }, annotations: { readOnlyHint: "yes" } }).success).toBe(false);
+    expect(ToolV2Codec.parse({ name: "x", inputSchema: { type: "object" }, icons: [{}] }).success).toBe(false);
+  });
+
+  it("round-trips open CallToolResultV2 objects with required string result/content discriminators", () => {
+    const content = [
+      { type: "text", text: "hello", annotations: { audience: ["user"], priority: 0.5, lastModified: "now" }, _meta: { a: 1 }, extension: true },
+      { type: "image", data: "aW1hZ2U=", mimeType: "image/png", extension: 1 },
+      { type: "audio", data: "YXVkaW8=", mimeType: "audio/wav", extension: 2 },
+      { type: "resource_link", name: "docs", uri: "https://example.test", title: "Docs", description: "d", mimeType: "text/html", size: 1, icons: [{ src: "icon.png" }], extension: 3 },
+      { type: "resource", resource: { uri: "file:///x", text: "body", blob: "Ym9keQ==", mimeType: "text/plain", _meta: { r: 1 }, extension: 4 } },
+    ];
+    fc.assert(fc.property(fc.string(), fc.jsonValue(), fc.dictionary(fc.string(), fc.jsonValue()), (resultType, structuredContent, extra) => {
+      const result = asJson({ ...extra, resultType, content, structuredContent, isError: false, _meta: { trace: "test" } });
+      const parsed = CallToolResultV2Codec.parse(result);
+      expect(parsed.success).toBe(true);
+      if (parsed.success) expect(parsed.value).toEqual(result);
+    }));
+    expect(CallToolResultV2Codec.parse({ resultType: "complete" }).success).toBe(false);
+    expect(CallToolResultV2Codec.parse({ resultType: 1, content: [] }).success).toBe(false);
+    expect(CallToolResultV2Codec.parse({ resultType: "complete", content: [{ type: "text" }] }).success).toBe(false);
+    fc.assert(fc.property(fc.string().filter((type) => !["text", "image", "audio", "resource_link", "resource"].includes(type)), (type) => {
+      expect(CallToolResultV2Codec.parse({ resultType: "complete", content: [{ type }] }).success).toBe(false);
+    }));
+    expect(CallToolResultV2Codec.parse({ resultType: "complete", content: [], isError: "no" }).success).toBe(false);
   });
 
   it("binds strict get, update, and cancel request/result discriminators", () => {

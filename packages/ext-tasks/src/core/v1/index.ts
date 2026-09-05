@@ -225,8 +225,11 @@ export const CreateTaskResultV1Codec: RuntimeCodec<CreateTaskResultV1> = createR
 export const CallToolResultV1Codec: RuntimeCodec<CallToolResultV1> = createRuntimeCodec<CallToolResultV1>((value, path) => {
   const record = expectRecord(value, path);
   if (!Array.isArray(record.content)) throw new ProtocolDecodeError("expected array", at(path, "content"));
-  const content = record.content.map((item, index) => decodeContentBlock(item, at(at(path, "content"), index)));
-  return { content, ...(record.structuredContent === undefined ? {} : { structuredContent: jsonRecord(record.structuredContent, at(path, "structuredContent")) }), ...(record.isError === undefined ? {} : { isError: optionalBoolean(record, "isError", path) }), ...(record._meta === undefined ? {} : { _meta: jsonRecord(record._meta, at(path, "_meta")) }) };
+  record.content.forEach((item, index) => decodeContentBlock(item, at(at(path, "content"), index)));
+  if (record.structuredContent !== undefined) jsonRecord(record.structuredContent, at(path, "structuredContent"));
+  if (record.isError !== undefined) optionalBoolean(record, "isError", path);
+  if (record._meta !== undefined) jsonRecord(record._meta, at(path, "_meta"));
+  return record as unknown as CallToolResultV1;
 });
 export const GetTaskRequestV1Codec: RuntimeCodec<GetTaskRequestV1> = createRuntimeCodec<GetTaskRequestV1>((v, p) => decodeTaskRequest(v, p, "tasks/get"));
 export const GetTaskResultV1Codec: RuntimeCodec<GetTaskResultV1> = createRuntimeCodec<GetTaskResultV1>((v, p) => { const record = expectRecord(v, p); return { ...decodeTask(v, p), ...(record._meta === undefined ? {} : { _meta: jsonRecord(record._meta, at(p, "_meta")) }) }; });

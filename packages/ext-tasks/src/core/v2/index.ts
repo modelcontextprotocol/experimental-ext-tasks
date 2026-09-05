@@ -15,6 +15,38 @@ export const TASKS_EXTENSION_ID_V2 = "io.modelcontextprotocol/tasks" as const;
 export const CLIENT_CAPABILITIES_META_KEY_V2 =
   "io.modelcontextprotocol/clientCapabilities" as const;
 
+
+type OpenObjectV2 = Readonly<Record<string, JsonValue>>;
+type ToolAnnotationsV2 = OpenObjectV2 & {
+  readonly title?: string;
+  readonly readOnlyHint?: boolean;
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
+};
+type IconV2 = OpenObjectV2 & {
+  readonly src: string;
+  readonly mimeType?: string;
+  readonly sizes?: readonly string[];
+  readonly theme?: "light" | "dark";
+};
+type ContentBlockV2 = OpenObjectV2 & (
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "image" | "audio"; readonly data: string; readonly mimeType: string }
+  | { readonly type: "resource_link"; readonly name: string; readonly uri: string }
+  | { readonly type: "resource"; readonly resource: OpenObjectV2 }
+);
+
+export type ToolV2 = OpenObjectV2 & {
+  readonly name: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly inputSchema: OpenObjectV2 & { readonly type: "object"; readonly $schema?: string };
+  readonly outputSchema?: OpenObjectV2 & { readonly $schema?: string };
+  readonly annotations?: ToolAnnotationsV2;
+  readonly icons?: readonly IconV2[];
+  readonly _meta?: OpenObjectV2;
+};
 export type RequestIdV2 = string | number;
 export type TaskStatusV2 =
   | "working"
@@ -22,6 +54,8 @@ export type TaskStatusV2 =
   | "completed"
   | "failed"
   | "cancelled";
+
+export type TaskEligibleMethodV2 = "tools/call";
 
 export interface TaskV2 {
   readonly taskId: string;
@@ -89,7 +123,15 @@ export interface CreateTaskResultV2 extends TaskV2 {
   readonly resultType: "task";
   readonly _meta?: Readonly<Record<string, JsonValue>>;
 }
-export type ToolCallResultV2 = Readonly<Record<string, JsonValue>> & { readonly resultType: string };
+export type CallToolResultV2 = OpenObjectV2 & {
+  readonly resultType: string;
+  readonly content: readonly ContentBlockV2[];
+  readonly structuredContent?: JsonValue;
+  readonly isError?: boolean;
+  readonly _meta?: OpenObjectV2;
+};
+/** @deprecated Use CallToolResultV2. */
+export type ToolCallResultV2 = CallToolResultV2;
 export type EligibleTaskResultV2 = ToolCallResultV2 | CreateTaskResultV2;
 
 interface JsonRpcRequestV2 {
@@ -160,11 +202,130 @@ function expectConst(value: JsonValue | undefined, expected: string, path: Decod
 function optionalRecord(value: JsonValue | undefined, path: DecodePath) {
   return value === undefined ? undefined : expectRecord(value, path);
 }
+function optionalString(object: Record<string, JsonValue>, key: string, path: DecodePath): void {
+  if (object[key] !== undefined) expectString(object[key], [...path, key]);
+}
+function optionalBoolean(object: Record<string, JsonValue>, key: string, path: DecodePath): void {
+  if (object[key] !== undefined && typeof object[key] !== "boolean") throw new ProtocolDecodeError("expected boolean", [...path, key]);
+}
+function optionalStringArray(object: Record<string, JsonValue>, key: string, path: DecodePath): void {
+  const value = object[key];
+  if (value !== undefined && (!Array.isArray(value) || !value.every((item) => typeof item === "string"))) {
+    throw new ProtocolDecodeError("expected string array", [...path, key]);
+  }
+}
+
+function decodeAnnotations(value: JsonValue, path: DecodePath): void {
+  const object = expectRecord(value, path);
+  if (object.audience !== undefined) {
+    if (!Array.isArray(object.audience) || !object.audience.every((role) => role === "user" || role === "assistant")) {
+      throw new ProtocolDecodeError("expected role array", [...path, "audience"]);
+    }
+  }
+  if (object.priority !== undefined) {
+    const priority = expectNumber(object.priority, [...path, "priority"]);
+    if (priority < 0 || priority > 1) throw new ProtocolDecodeError("expected number from 0 to 1", [...path, "priority"]);
+  }
+  optionalString(object, "lastModified", path);
+}
+
+function decodeIcon(value: JsonValue, path: DecodePath): void {
+  const object = expectRecord(value, path);
+  expectString(object.src, [...path, "src"]);
+  optionalString(object, "mimeType", path);
+  optionalStringArray(object, "sizes", path);
+  if (object.theme !== undefined) expectEnum(object.theme, ["light", "dark"], [...path, "theme"]);
+}
+
+function decodeImplementation(value: JsonValue, path: DecodePath): void {
+  const object = expectRecord(value, path);
+  expectString(object.name, [...path, "name"]);
+  expectString(object.version, [...path, "version"]);
+  optionalString(object, "title", path);
+  optionalString(object, "description", path);
+  optionalString(object, "websiteUrl", path);
+  if (object.icons !== undefined) {
+    if (!Array.isArray(object.icons)) throw new ProtocolDecodeError("expected array", [...path, "icons"]);
+    object.icons.forEach((icon, index) => decodeIcon(icon, [...path, "icons", index]));
+  }
+}
+
+function decodeContentBlock(value: JsonValue, path: DecodePath): ContentBlockV2 {
+  const object = expectRecord(value, path);
+  const type = expectEnum(object.type, ["text", "image", "audio", "resource_link", "resource"], [...path, "type"]);
+  if (type === "text") expectString(object.text, [...path, "text"]);
+  else if (type === "image" || type === "audio") {
+    expectString(object.data, [...path, "data"]);
+    expectString(object.mimeType, [...path, "mimeType"]);
+  } else if (type === "resource_link") {
+    expectString(object.name, [...path, "name"]);
+    expectString(object.uri, [...path, "uri"]);
+    optionalString(object, "title", path);
+    optionalString(object, "description", path);
+    optionalString(object, "mimeType", path);
+    if (object.size !== undefined) expectInteger(object.size, [...path, "size"]);
+    if (object.icons !== undefined) {
+      if (!Array.isArray(object.icons)) throw new ProtocolDecodeError("expected array", [...path, "icons"]);
+      object.icons.forEach((icon, index) => decodeIcon(icon, [...path, "icons", index]));
+    }
+  } else {
+    const resource = expectRecord(object.resource, [...path, "resource"]);
+    expectString(resource.uri, [...path, "resource", "uri"]);
+    optionalString(resource, "mimeType", [...path, "resource"]);
+    optionalRecord(resource._meta, [...path, "resource", "_meta"]);
+    const hasText = resource.text !== undefined;
+    const hasBlob = resource.blob !== undefined;
+    if (!hasText && !hasBlob) throw new ProtocolDecodeError("expected text or blob", [...path, "resource"]);
+    if (hasText) expectString(resource.text, [...path, "resource", "text"]);
+    if (hasBlob) expectString(resource.blob, [...path, "resource", "blob"]);
+  }
+  if (object.annotations !== undefined) decodeAnnotations(object.annotations, [...path, "annotations"]);
+  optionalRecord(object._meta, [...path, "_meta"]);
+  return object as ContentBlockV2;
+}
+
+function decodeTool(value: JsonValue, path: DecodePath): ToolV2 {
+  const object = expectRecord(value, path);
+  expectString(object.name, [...path, "name"]);
+  optionalString(object, "title", path);
+  optionalString(object, "description", path);
+  const inputSchema = expectRecord(object.inputSchema, [...path, "inputSchema"]);
+  expectConst(inputSchema.type, "object", [...path, "inputSchema", "type"]);
+  optionalString(inputSchema, "$schema", [...path, "inputSchema"]);
+  if (object.outputSchema !== undefined) {
+    const outputSchema = expectRecord(object.outputSchema, [...path, "outputSchema"]);
+    optionalString(outputSchema, "$schema", [...path, "outputSchema"]);
+  }
+  if (object.annotations !== undefined) {
+    const annotations = expectRecord(object.annotations, [...path, "annotations"]);
+    optionalString(annotations, "title", [...path, "annotations"]);
+    for (const key of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]) optionalBoolean(annotations, key, [...path, "annotations"]);
+  }
+  if (object.icons !== undefined) {
+    if (!Array.isArray(object.icons)) throw new ProtocolDecodeError("expected array", [...path, "icons"]);
+    object.icons.forEach((icon, index) => decodeIcon(icon, [...path, "icons", index]));
+  }
+  optionalRecord(object._meta, [...path, "_meta"]);
+  return object as ToolV2;
+}
+
+function decodeCallToolResult(value: JsonValue, path: DecodePath): CallToolResultV2 {
+  const object = expectRecord(value, path);
+  expectString(object.resultType, [...path, "resultType"]);
+  if (!Array.isArray(object.content)) throw new ProtocolDecodeError("expected array", [...path, "content"]);
+  object.content.forEach((block, index) => decodeContentBlock(block, [...path, "content", index]));
+  optionalBoolean(object, "isError", path);
+  const meta = optionalRecord(object._meta, [...path, "_meta"]);
+  if (meta?.["io.modelcontextprotocol/serverInfo"] !== undefined) {
+    decodeImplementation(meta["io.modelcontextprotocol/serverInfo"], [...path, "_meta", "io.modelcontextprotocol/serverInfo"]);
+  }
+  return object as CallToolResultV2;
+}
 
 function decodeTask(value: JsonValue, path: DecodePath): TaskV2 {
   const object = expectRecord(value, path);
   const ttl = object.ttlMs;
-  if (ttl !== null && ttl === undefined) throw new ProtocolDecodeError("required field", [...path, "ttlMs"]);
+  if (!has(object, "ttlMs")) throw new ProtocolDecodeError("required field", [...path, "ttlMs"]);
   const task: TaskV2 = {
     taskId: expectString(object.taskId, [...path, "taskId"]),
     status: expectEnum(object.status, statuses, [...path, "status"]),
@@ -242,6 +403,10 @@ function decodeCompleteResult(value: JsonValue, path: DecodePath) {
   return object;
 }
 
+export const ToolV2Codec: RuntimeCodec<ToolV2> = createRuntimeCodec<ToolV2>(decodeTool);
+export const CallToolResultV2Codec: RuntimeCodec<CallToolResultV2> = createRuntimeCodec<CallToolResultV2>(decodeCallToolResult);
+/** @deprecated Use CallToolResultV2Codec. */
+export const ToolCallResultV2Codec: RuntimeCodec<ToolCallResultV2> = CallToolResultV2Codec;
 export const TaskV2Codec: RuntimeCodec<TaskV2> = createRuntimeCodec<TaskV2>(decodeTask);
 export const DetailedTaskV2Codec: RuntimeCodec<DetailedTaskV2> = createRuntimeCodec<DetailedTaskV2>(decodeDetailedTask);
 export const ErrorV2Codec: RuntimeCodec<ErrorV2> = createRuntimeCodec<ErrorV2>(decodeError);
