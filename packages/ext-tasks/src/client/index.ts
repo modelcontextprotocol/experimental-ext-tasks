@@ -1,6 +1,11 @@
 /** Requester-side MCP Tasks session and execution support. */
 
 import {
+  Client,
+  ProtocolError,
+  type StandardSchemaV1,
+} from "@modelcontextprotocol/client";
+import {
   isJsonValue,
   isJsonArray,
   type JsonValue,
@@ -68,6 +73,7 @@ export interface IncomingServerRequest {
 }
 
 export interface ConnectedMcpSessionPort {
+  readonly endpointId: string;
   readonly taskCapabilities: SessionTaskCapabilities;
   dispatch(
     request: JsonValue,
@@ -79,6 +85,278 @@ export interface ConnectedMcpSessionPort {
   onNotification(listener: (notification: JsonValue) => void): () => void;
   onInvalidated(listener: (reason: unknown) => void): () => void;
   readonly invalidated: boolean;
+}
+
+const jsonValueSchema: StandardSchemaV1<JsonValue, JsonValue> = {
+  "~standard": {
+    version: 1,
+    vendor: "@modelcontextprotocol/ext-tasks",
+    validate(value) {
+      return isJsonValue(value)
+        ? { value }
+        : { issues: [{ message: "Expected a JSON value" }] };
+    },
+  },
+};
+
+function isJsonRecord(
+  value: unknown,
+): value is Readonly<Record<string, JsonValue>> {
+  return (
+    isJsonValue(value) &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof value === "object"
+  );
+}
+
+function clientTaskCapabilities(
+  client: ClientPublicSurface,
+): SessionTaskCapabilities {
+  const capabilities = client.getServerCapabilities();
+  if (client.getProtocolEra() === "modern") {
+    const extension =
+      capabilities?.extensions?.["io.modelcontextprotocol/tasks"];
+    if (
+      extension !== null &&
+      typeof extension === "object" &&
+      !Array.isArray(extension) &&
+      Object.keys(extension).length === 0
+    )
+      return { generation: "v2", capabilities: {} };
+    return { generation: "none" };
+  }
+  const tasks = capabilities?.tasks;
+  return tasks === undefined
+    ? { generation: "none" }
+    : { generation: "v1", capabilities: structuredClone(tasks) };
+}
+
+function asClientRequest(request: JsonValue): {
+  readonly method: string;
+  readonly params?: Readonly<Record<string, JsonValue>>;
+} {
+  if (!isJsonRecord(request))
+    throw new DispatchError("MCP request must be a JSON object");
+  const method = request.method;
+  if (typeof method !== "string")
+    throw new DispatchError("MCP request method must be a string");
+  const params = request.params;
+  if (params === undefined) return { method };
+  if (!isJsonRecord(params))
+    throw new DispatchError("MCP request params must be a JSON object");
+  return { method, params };
+}
+
+function isTaskInputMethod(method: string): boolean {
+  return (
+    method === "elicitation/create" ||
+    method === "sampling/createMessage" ||
+    method === "roots/list"
+  );
+}
+
+type ClientPublicSurface = Pick<
+  Client,
+  | "request"
+  | "getProtocolEra"
+  | "getServerCapabilities"
+  | "fallbackRequestHandler"
+  | "fallbackNotificationHandler"
+  | "onclose"
+>;
+
+const adaptedClients = new WeakSet<object>();
+
+function isConnectedMcpSessionPort(
+  value: unknown,
+): value is ConnectedMcpSessionPort {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as Partial<ConnectedMcpSessionPort>;
+  return (
+    typeof candidate.endpointId === "string" &&
+    candidate.taskCapabilities !== undefined &&
+    typeof candidate.dispatch === "function" &&
+    typeof candidate.onServerRequest === "function" &&
+    typeof candidate.onNotification === "function" &&
+    typeof candidate.onInvalidated === "function" &&
+    typeof candidate.invalidated === "boolean"
+  );
+}
+
+function isClientPublicSurface(value: unknown): value is ClientPublicSurface {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as Partial<ClientPublicSurface>;
+  return (
+    typeof candidate.request === "function" &&
+    typeof candidate.getProtocolEra === "function" &&
+    typeof candidate.getServerCapabilities === "function"
+  );
+}
+
+class ClientSessionPort implements ConnectedMcpSessionPort {
+  readonly taskCapabilities: SessionTaskCapabilities;
+  private readonly serverRequestListeners = new Set<
+    (incoming: IncomingServerRequest) => Promise<JsonRpcResponse>
+  >();
+  private readonly notificationListeners = new Set<
+    (notification: JsonValue) => void
+  >();
+  private readonly invalidationListeners = new Set<(reason: unknown) => void>();
+  private readonly previousFallbackRequestHandler: ClientPublicSurface["fallbackRequestHandler"];
+  private readonly previousFallbackNotificationHandler: ClientPublicSurface["fallbackNotificationHandler"];
+  private readonly previousOnclose: ClientPublicSurface["onclose"];
+  private disposed = false;
+  private isInvalidated = false;
+
+  private readonly fallbackRequestHandler: NonNullable<
+    ClientPublicSurface["fallbackRequestHandler"]
+  > = async (request, context) => {
+    if (!isTaskInputMethod(request.method)) {
+      if (this.previousFallbackRequestHandler !== undefined)
+        return this.previousFallbackRequestHandler(request, context);
+      throw new ProtocolError(-32601, `Method not found: ${request.method}`);
+    }
+    const listener = this.serverRequestListeners.values().next().value;
+    if (listener === undefined) {
+      if (this.previousFallbackRequestHandler !== undefined)
+        return this.previousFallbackRequestHandler(request, context);
+      throw new ProtocolError(-32601, `Method not found: ${request.method}`);
+    }
+    if (!isJsonValue(request))
+      throw new ProtocolError(-32600, "Inbound request is not JSON");
+    const response = await listener({ request, requestContext: context });
+    if (response.kind === "error")
+      throw new ProtocolError(
+        response.error.code,
+        response.error.message,
+        response.error.data,
+      );
+    if (!isJsonRecord(response.result))
+      throw new ProtocolError(
+        -32603,
+        "Inbound handler returned a non-object result",
+      );
+    return response.result;
+  };
+
+  private readonly fallbackNotificationHandler: NonNullable<
+    ClientPublicSurface["fallbackNotificationHandler"]
+  > = async (notification) => {
+    await this.previousFallbackNotificationHandler?.(notification);
+    if (!isJsonValue(notification)) return;
+    for (const listener of [...this.notificationListeners])
+      listener(notification);
+  };
+
+  private readonly onclose = (): void => {
+    try {
+      this.previousOnclose?.();
+    } finally {
+      this.invalidate(new Error("MCP client connection closed"));
+    }
+  };
+
+  constructor(
+    private readonly client: ClientPublicSurface,
+    readonly endpointId: string,
+  ) {
+    if (adaptedClients.has(client))
+      throw new TypeError(
+        "An ext-tasks adapter is already active for this Client",
+      );
+    this.previousFallbackRequestHandler = client.fallbackRequestHandler;
+    this.previousFallbackNotificationHandler =
+      client.fallbackNotificationHandler;
+    this.previousOnclose = client.onclose;
+    this.taskCapabilities = clientTaskCapabilities(client);
+    adaptedClients.add(client);
+    client.fallbackRequestHandler = this.fallbackRequestHandler;
+    client.fallbackNotificationHandler = this.fallbackNotificationHandler;
+    client.onclose = this.onclose;
+  }
+
+  get invalidated(): boolean {
+    return this.isInvalidated;
+  }
+
+  async dispatch(
+    request: JsonValue,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<JsonRpcResponse> {
+    try {
+      const result = await this.client.request(
+        asClientRequest(request),
+        jsonValueSchema,
+        options.signal === undefined ? {} : { signal: options.signal },
+      );
+      return { kind: "result", result };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        const data = error.data;
+        return {
+          kind: "error",
+          error: {
+            code: error.code,
+            message: error.message,
+            ...(data === undefined || !isJsonValue(data) ? {} : { data }),
+          },
+        };
+      }
+      throw new DispatchError("MCP client request failed", false, {
+        cause: error,
+      });
+    }
+  }
+
+  onServerRequest(
+    handler: (incoming: IncomingServerRequest) => Promise<JsonRpcResponse>,
+  ): () => void {
+    this.serverRequestListeners.add(handler);
+    return () => this.serverRequestListeners.delete(handler);
+  }
+
+  onNotification(listener: (notification: JsonValue) => void): () => void {
+    this.notificationListeners.add(listener);
+    return () => this.notificationListeners.delete(listener);
+  }
+
+  onInvalidated(listener: (reason: unknown) => void): () => void {
+    this.invalidationListeners.add(listener);
+    return () => this.invalidationListeners.delete(listener);
+  }
+
+  [Symbol.dispose](): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.client.fallbackRequestHandler === this.fallbackRequestHandler)
+      this.client.fallbackRequestHandler = this.previousFallbackRequestHandler;
+    if (
+      this.client.fallbackNotificationHandler ===
+      this.fallbackNotificationHandler
+    )
+      this.client.fallbackNotificationHandler =
+        this.previousFallbackNotificationHandler;
+    if (this.client.onclose === this.onclose)
+      this.client.onclose = this.previousOnclose;
+    adaptedClients.delete(this.client);
+    this.serverRequestListeners.clear();
+    this.notificationListeners.clear();
+    this.invalidationListeners.clear();
+  }
+
+  private invalidate(reason: unknown): void {
+    if (this.isInvalidated) return;
+    this.isInvalidated = true;
+    for (const listener of [...this.invalidationListeners]) listener(reason);
+  }
+}
+
+export function createSessionPortFromClient(
+  client: Client,
+  endpointId: string,
+): ConnectedMcpSessionPort & Disposable {
+  return new ClientSessionPort(client, endpointId);
 }
 
 export class DispatchError extends Error {
@@ -248,6 +526,7 @@ export type ToolExecution<TResult, TApplicationContext = void> =
   | (ToolExecutionCommon<TResult, TApplicationContext> & {
       readonly kind: "task";
       readonly handle: TaskHandle;
+      serializeReference(): SerializedTaskReference;
     });
 
 export class TaskUpdatesAlreadyAcquiredError extends Error {
@@ -322,10 +601,6 @@ function reasonAsError(reason: unknown): Error {
   );
 }
 
-function unsupported(feature: string): Error {
-  return new Error(`${feature} is not supported`);
-}
-
 const DEFAULT_TASK_POLL_INTERVAL_MS = 10;
 
 type TaskTurn =
@@ -375,6 +650,7 @@ class TaskExecution<
   constructor(
     readonly applicationContext: TApplicationContext,
     readonly handle: TaskHandle,
+    private readonly endpointId: string,
     initialSnapshot: TaskSnapshot,
     driver: TaskDriver<TResult>,
     private readonly cancelTask: (signal?: AbortSignal) => Promise<void>,
@@ -400,6 +676,10 @@ class TaskExecution<
       () => this.closed,
       this.inputController.signal,
     );
+  }
+
+  serializeReference(): SerializedTaskReference {
+    return { endpointId: this.endpointId, ...this.handle };
   }
 
   onNotification(snapshot: TaskSnapshot): void {
@@ -956,6 +1236,7 @@ class PortTaskEnabledSession<
   TApplicationContext,
 > implements TaskEnabledSession<TApplicationContext> {
   private closed = false;
+  private closeError: Error | undefined;
   private readonly lifecycleController = new AbortController();
   private invalidationError: Error | undefined;
   private readonly disposeListeners: readonly (() => void)[];
@@ -976,6 +1257,7 @@ class PortTaskEnabledSession<
   constructor(
     private readonly port: ConnectedMcpSessionPort,
     private readonly options: WithTasksOptions<TApplicationContext>,
+    disposePort?: () => void,
   ) {
     const reportError = (error: Error): void => {
       try {
@@ -1014,6 +1296,7 @@ class PortTaskEnabledSession<
       }),
       () => options.signal?.removeEventListener("abort", onSessionAbort),
       () => this.managedDeclarations?.close(),
+      ...(disposePort === undefined ? [] : [disposePort]),
     ];
     if (options.signal?.aborted === true) onSessionAbort();
     if (port.invalidated) {
@@ -1133,6 +1416,7 @@ class PortTaskEnabledSession<
       const execution = new TaskExecution(
         options.applicationContext as TApplicationContext,
         handle,
+        this.port.endpointId,
         initial,
         async (
           accept,
@@ -1234,6 +1518,7 @@ class PortTaskEnabledSession<
         new TaskExecution(
           options.applicationContext as TApplicationContext,
           handle,
+          this.port.endpointId,
           initial,
           async (
             accept,
@@ -1434,18 +1719,351 @@ class PortTaskEnabledSession<
     );
   }
 
-  resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
+  async resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
     reference: SerializedTaskReference,
-    options?: {
+    options: {
       readonly resultCodec?: RuntimeCodec<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
-    },
+    } = {},
   ): Promise<ToolExecution<TResult, TApplicationContext>> {
-    void reference;
-    void options;
     this.assertUsable();
-    return Promise.reject(unsupported("Task resumption"));
+    const capabilities = this.port.taskCapabilities;
+    if (reference.endpointId !== this.port.endpointId)
+      throw new Error("Task reference belongs to a different endpoint");
+    if (reference.generation !== capabilities.generation)
+      throw new Error("Task reference generation does not match this session");
+    if (reference.originalOperation !== "tools/call")
+      throw new Error("Task reference operation is not supported");
+
+    const resumeLifecycle = linkAbortSignals(
+      this.lifecycleController.signal,
+      options.signal,
+    );
+    const resumeSignal = resumeLifecycle.signal;
+    const executionId = `execution-${++nextExecutionId}`;
+    const codec =
+      options.resultCodec ??
+      (defaultResultCodec(reference.generation) as RuntimeCodec<TResult>);
+    try {
+      throwIfAborted(resumeSignal);
+      const response = await dispatchWithRetry(
+        this.port,
+        {
+          method: "tasks/get",
+          params:
+            reference.generation === "v2"
+              ? withTaskCapabilityV2({ taskId: reference.taskId })
+              : { taskId: reference.taskId },
+        },
+        resumeSignal,
+        "observe",
+      );
+      this.assertUsable();
+      throwIfAborted(resumeSignal);
+
+      if (reference.generation === "v1") {
+        const task = decodeResult(
+          GetTaskResultV1Codec,
+          responseResult(response),
+        );
+        const execution = new TaskExecution(
+          options.applicationContext as TApplicationContext,
+          reference,
+          this.port.endpointId,
+          { generation: "v1", task },
+          async (
+            accept,
+            waitForTurn,
+            observe,
+            signal,
+            cancelledError,
+            closedError,
+            isClosed,
+          ) => {
+            let current = task;
+            let notificationSequence = 0;
+            while (!terminalStatus(current.status)) {
+              const turn = await waitForTurn(
+                notificationSequence,
+                Math.max(
+                  DEFAULT_TASK_POLL_INTERVAL_MS,
+                  current.pollInterval ?? DEFAULT_TASK_POLL_INTERVAL_MS,
+                ),
+              );
+              const observed =
+                turn ??
+                (await observe(notificationSequence, (observationSignal) =>
+                  dispatchWithRetry(
+                    this.port,
+                    {
+                      method: "tasks/get",
+                      params: { taskId: reference.taskId },
+                    },
+                    observationSignal,
+                    "observe",
+                  ).then((nextResponse) => ({
+                    generation: "v1" as const,
+                    task: decodeResult(
+                      GetTaskResultV1Codec,
+                      responseResult(nextResponse),
+                    ),
+                  })),
+                ));
+              if (observed?.snapshot.generation !== "v1") continue;
+              notificationSequence = observed.sequence;
+              current = observed.snapshot.task;
+              if (!isClosed()) accept({ generation: "v1", task: current });
+            }
+            if (isClosed()) throw closedError;
+            if (current.status === "cancelled") throw cancelledError;
+            if (current.status === "failed")
+              throw new Error(current.statusMessage ?? "Task failed");
+            const taskResult = responseResult(
+              await dispatchWithRetry(
+                this.port,
+                {
+                  method: "tasks/result",
+                  params: { taskId: reference.taskId },
+                },
+                signal,
+                "observe",
+              ),
+            );
+            decodeResult(TaskResultV1Codec, taskResult);
+            return decodeResult(codec, taskResult);
+          },
+          async (signal) => {
+            const currentCapabilities = this.port.taskCapabilities;
+            if (
+              currentCapabilities.generation !== "v1" ||
+              currentCapabilities.capabilities.cancel === undefined
+            )
+              throw new TaskCancellationUnsupportedError();
+            decodeResult(
+              CancelTaskResultV1Codec,
+              responseResult(
+                await dispatchWithRetry(
+                  this.port,
+                  {
+                    method: "tasks/cancel",
+                    params: { taskId: reference.taskId },
+                  },
+                  signal,
+                  "mutate",
+                ),
+              ),
+            );
+          },
+          this.lifecycleController.signal,
+        );
+        return this.trackTaskExecution(execution, {
+          lifetime: "task-v1",
+          generation: "v1",
+          taskId: reference.taskId,
+          toolName: "<resumed>",
+          executionId,
+          applicationContext: options.applicationContext as TApplicationContext,
+          signal: execution.inputSignal(),
+        });
+      }
+
+      const task = decodeResult(GetTaskResultV2Codec, responseResult(response));
+      return this.trackTaskExecution(
+        new TaskExecution(
+          options.applicationContext as TApplicationContext,
+          reference,
+          this.port.endpointId,
+          { generation: "v2", task },
+          async (
+            accept,
+            waitForTurn,
+            observe,
+            signal,
+            cancelledError,
+            closedError,
+            isClosed,
+            inputSignal,
+          ) => {
+            let current: DetailedTaskV2 = task;
+            let notificationSequence = 0;
+            const acquiredInputs = new Map<string, string>();
+            await this.acquireV2TaskInputs(
+              current,
+              options.applicationContext as TApplicationContext,
+              inputSignal,
+              signal,
+              acquiredInputs,
+            );
+            while (!terminalStatus(current.status)) {
+              const turn = await waitForTurn(
+                notificationSequence,
+                Math.max(
+                  DEFAULT_TASK_POLL_INTERVAL_MS,
+                  current.pollIntervalMs ?? DEFAULT_TASK_POLL_INTERVAL_MS,
+                ),
+              );
+              const observed =
+                turn ??
+                (await observe(notificationSequence, (observationSignal) =>
+                  dispatchWithRetry(
+                    this.port,
+                    {
+                      method: "tasks/get",
+                      params: withTaskCapabilityV2({
+                        taskId: reference.taskId,
+                      }),
+                    },
+                    observationSignal,
+                    "observe",
+                  ).then((nextResponse) => ({
+                    generation: "v2" as const,
+                    task: decodeResult(
+                      GetTaskResultV2Codec,
+                      responseResult(nextResponse),
+                    ),
+                  })),
+                ));
+              if (observed?.snapshot.generation !== "v2") continue;
+              notificationSequence = observed.sequence;
+              current = observed.snapshot.task as DetailedTaskV2;
+              if (!isClosed()) accept({ generation: "v2", task: current });
+              await this.acquireV2TaskInputs(
+                current,
+                options.applicationContext as TApplicationContext,
+                inputSignal,
+                signal,
+                acquiredInputs,
+              );
+            }
+            if (isClosed()) throw closedError;
+            if (current.status === "cancelled") throw cancelledError;
+            if (current.status === "failed")
+              throw new JsonRpcResponseError(current.error);
+            if (current.status !== "completed")
+              throw new Error(
+                `Unsupported terminal task status: ${current.status}`,
+              );
+            return decodeResult(codec, current.result);
+          },
+          async (signal) => {
+            decodeResult(
+              CancelTaskResultV2Codec,
+              responseResult(
+                await dispatchWithRetry(
+                  this.port,
+                  {
+                    method: "tasks/cancel",
+                    params: withTaskCapabilityV2({ taskId: reference.taskId }),
+                  },
+                  signal,
+                  "mutate",
+                ),
+              ),
+            );
+          },
+          this.lifecycleController.signal,
+        ),
+      );
+    } finally {
+      resumeLifecycle.dispose();
+    }
+  }
+
+  private async acquireV2TaskInputs(
+    task: DetailedTaskV2,
+    applicationContext: TApplicationContext,
+    inputSignal: AbortSignal,
+    signal: AbortSignal,
+    acquiredInputs: Map<string, string>,
+  ): Promise<void> {
+    if (task.status !== "input_required") return;
+    const inputResponses: Record<string, InputResponseV2> = {};
+    for (const [inputKey, inputRequest] of Object.entries(task.inputRequests)) {
+      const signature = deterministicJson(inputRequest);
+      const acquiredSignature = acquiredInputs.get(inputKey);
+      if (acquiredSignature !== undefined) {
+        if (acquiredSignature !== signature)
+          this.reportBackgroundError(
+            new Error(`V2 task input key ${inputKey} was reused incompatibly`),
+          );
+        continue;
+      }
+      acquiredInputs.set(inputKey, signature);
+      const request: InputRequestV2 = inputRequest;
+      const projected: ApplicationInputRequest | undefined =
+        request.method === "sampling/createMessage"
+          ? { kind: "sampling", params: request.params }
+          : request.method === "roots/list"
+            ? {
+                kind: "roots",
+                ...(request.params === undefined
+                  ? {}
+                  : { params: request.params }),
+              }
+            : request.method === "elicitation/create"
+              ? { kind: "elicitation", params: request.params }
+              : undefined;
+      if (projected === undefined) {
+        this.reportBackgroundError(
+          new Error(`Unknown V2 task input method for key ${inputKey}`),
+        );
+        continue;
+      }
+      let result: unknown;
+      if (this.options.onInputRequest === undefined) {
+        if (request.method !== "elicitation/create") continue;
+        result = { action: "cancel" };
+      } else {
+        try {
+          result = await this.options.onInputRequest(projected, {
+            lifetime: "task-v2",
+            taskId: task.taskId,
+            inputKey,
+            applicationContext,
+            signal: inputSignal,
+          });
+        } catch {
+          if (inputSignal.aborted) return;
+          if (request.method !== "elicitation/create") continue;
+          result = { action: "cancel" };
+        }
+      }
+      try {
+        const responseCodec =
+          request.method === "sampling/createMessage"
+            ? CreateMessageResultV2Codec
+            : request.method === "roots/list"
+              ? ListRootsResultV2Codec
+              : ElicitResultV2Codec;
+        inputResponses[inputKey] = decodeResult(
+          responseCodec as RuntimeCodec<InputResponseV2>,
+          result as JsonValue,
+        );
+      } catch (error) {
+        this.reportBackgroundError(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+    }
+    if (inputSignal.aborted || Object.keys(inputResponses).length === 0) return;
+    decodeResult(
+      UpdateTaskResultV2Codec,
+      responseResult(
+        await dispatchWithRetry(
+          this.port,
+          {
+            method: "tasks/update",
+            params: withTaskCapabilityV2({
+              taskId: task.taskId,
+              inputResponses,
+            }),
+          },
+          signal,
+          "mutate",
+        ),
+      ),
+    );
   }
 
   private cleanupLateTaskCreation(
@@ -1489,9 +2107,17 @@ class PortTaskEnabledSession<
       this.lifecycleController.abort(
         new Error("Task-enabled session is closed"),
       );
-      for (const dispose of this.disposeListeners) dispose();
+      for (const dispose of this.disposeListeners) {
+        try {
+          dispose();
+        } catch (error) {
+          this.closeError ??= reasonAsError(error);
+        }
+      }
     }
-    return Promise.resolve();
+    return this.closeError === undefined
+      ? Promise.resolve()
+      : Promise.reject(this.closeError);
   }
 
   [Symbol.asyncDispose](): Promise<void> {
@@ -1698,7 +2324,36 @@ class PortTaskEnabledSession<
 
 export function withTasks<TApplicationContext = void>(
   session: ConnectedMcpSessionPort,
-  options: WithTasksOptions<TApplicationContext> = {},
+  options?: WithTasksOptions<TApplicationContext>,
+): TaskEnabledSession<TApplicationContext>;
+export function withTasks<TApplicationContext = void>(
+  client: Client,
+  options: WithTasksOptions<TApplicationContext> & {
+    readonly endpointId: string;
+  },
+): TaskEnabledSession<TApplicationContext>;
+export function withTasks<TApplicationContext = void>(
+  session: ConnectedMcpSessionPort | Client,
+  options: WithTasksOptions<TApplicationContext> & {
+    readonly endpointId?: string;
+  } = {},
 ): TaskEnabledSession<TApplicationContext> {
-  return new PortTaskEnabledSession(session, options);
+  if (isConnectedMcpSessionPort(session))
+    return new PortTaskEnabledSession(session, options);
+  if (!isClientPublicSurface(session))
+    throw new TypeError(
+      "withTasks requires a ConnectedMcpSessionPort or Client-compatible object",
+    );
+  const endpointId = options.endpointId;
+  if (endpointId === undefined)
+    throw new TypeError("withTasks(Client) requires options.endpointId");
+  const port = new ClientSessionPort(session, endpointId);
+  try {
+    return new PortTaskEnabledSession(port, options, () =>
+      port[Symbol.dispose](),
+    );
+  } catch (error) {
+    port[Symbol.dispose]();
+    throw error;
+  }
 }
