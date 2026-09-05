@@ -170,7 +170,7 @@ async function checkBuiltContract() {
   assert.deepEqual(
     sorted(Object.keys(manifest.exports ?? {})),
     sorted(expectedSubpaths),
-    "exports must contain exactly the four public subpaths and no root export",
+    "exports must contain exactly the public subpaths and no root export",
   );
 
   const typeMappings = manifest.typesVersions?.["*"] ?? {};
@@ -251,6 +251,11 @@ async function checkPackedContract() {
       ),
       false,
       "Tarball includes source, test-support, or test files",
+    );
+    assert.equal(
+      packedPaths.some((path) => /^dist\/server\//u.test(path)),
+      false,
+      "Tarball includes removed server artifacts",
     );
     assert.equal(
       packedPaths.some((path) => /(?:^|\/)package\.json$/u.test(path)),
@@ -369,17 +374,32 @@ async function checkPackedContract() {
       );
     }
 
-    const installedFiles = await listFiles(
-      join(consumerDirectory, "node_modules", ...packageName.split("/")),
+    const installedPackageDirectory = join(
+      consumerDirectory,
+      "node_modules",
+      ...packageName.split("/"),
+    );
+    const installedRelativePaths = (
+      await listFiles(installedPackageDirectory)
+    ).map((path) =>
+      relative(installedPackageDirectory, path).replaceAll("\\", "/"),
     );
     assert.equal(
-      installedFiles.some((path) =>
-        /(?:^|\/)(?:test-support|tests?)(?:\/|$)/u.test(
-          relative(consumerDirectory, path),
-        ),
+      installedRelativePaths.includes("dist/client/index.js"),
+      true,
+      "Installed package inventory is missing dist/client/index.js",
+    );
+    assert.equal(
+      installedRelativePaths.some((path) =>
+        /(?:^|\/)(?:test-support|tests?)(?:\/|$)/u.test(path),
       ),
       false,
       "Installed package includes test support",
+    );
+    assert.equal(
+      installedRelativePaths.some((path) => /^dist\/server\//u.test(path)),
+      false,
+      "Installed package includes removed server artifacts",
     );
     console.log(`Validated packed consumer contract: ${filename}`);
   } finally {
