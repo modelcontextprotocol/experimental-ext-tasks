@@ -2,6 +2,7 @@
 
 import {
   isJsonValue,
+  isJsonArray,
   type JsonValue,
   type RuntimeCodec,
   type TaskGeneration,
@@ -415,40 +416,41 @@ class TaskExecution<
   updates(signal?: AbortSignal): AsyncIterable<TaskSnapshot> {
     if (this.updatesAcquired) throw new TaskUpdatesAlreadyAcquiredError();
     this.updatesAcquired = true;
-    const execution = this;
-    return {
-      async *[Symbol.asyncIterator]() {
-        while (true) {
-          throwIfAborted(signal);
-          if (execution.initialSnapshot !== undefined) {
-            const snapshot = execution.initialSnapshot;
-            execution.initialSnapshot = undefined;
-            yield snapshot;
-            continue;
-          }
-          if (execution.pendingSnapshot !== undefined) {
-            const snapshot = execution.pendingSnapshot;
-            execution.pendingSnapshot = undefined;
-            yield snapshot;
-            continue;
-          }
-          if (execution.terminalSnapshot !== undefined) {
-            const snapshot = execution.terminalSnapshot;
-            execution.terminalSnapshot = undefined;
-            yield snapshot;
-            continue;
-          }
-          const settled = await execution.waitForUpdateOrResult(signal);
-          if (
-            !settled &&
-            execution.initialSnapshot === undefined &&
-            execution.pendingSnapshot === undefined &&
-            execution.terminalSnapshot === undefined
-          )
-            return;
-        }
-      },
-    };
+    return this.iterateUpdates(signal);
+  }
+
+  private async *iterateUpdates(
+    signal?: AbortSignal,
+  ): AsyncIterable<TaskSnapshot> {
+    while (true) {
+      throwIfAborted(signal);
+      if (this.initialSnapshot !== undefined) {
+        const snapshot = this.initialSnapshot;
+        this.initialSnapshot = undefined;
+        yield snapshot;
+        continue;
+      }
+      if (this.pendingSnapshot !== undefined) {
+        const snapshot = this.pendingSnapshot;
+        this.pendingSnapshot = undefined;
+        yield snapshot;
+        continue;
+      }
+      if (this.terminalSnapshot !== undefined) {
+        const snapshot = this.terminalSnapshot;
+        this.terminalSnapshot = undefined;
+        yield snapshot;
+        continue;
+      }
+      const settled = await this.waitForUpdateOrResult(signal);
+      if (
+        !settled &&
+        this.initialSnapshot === undefined &&
+        this.pendingSnapshot === undefined &&
+        this.terminalSnapshot === undefined
+      )
+        return;
+    }
   }
 
   private accept(snapshot: TaskSnapshot): void {
@@ -520,17 +522,16 @@ class TaskExecution<
       return this.currentTurn(afterSequence);
     }
     await new Promise<void>((resolve, reject) => {
-      let timeout: ReturnType<typeof setTimeout>;
       const finish = (error?: unknown): void => {
         clearTimeout(timeout);
         this.notificationWaiters.delete(onNotification);
         this.controller.signal.removeEventListener("abort", onAbort);
         if (error === undefined) resolve();
-        else reject(error);
+        else reject(reasonAsError(error));
       };
       const onNotification = (): void => finish();
       const onAbort = (): void => finish(this.controller.signal.reason);
-      timeout = setTimeout(onNotification, Math.max(0, delayMs));
+      const timeout = setTimeout(onNotification, Math.max(0, delayMs));
       this.notificationWaiters.add(onNotification);
       this.controller.signal.addEventListener("abort", onAbort, { once: true });
     });
@@ -581,13 +582,15 @@ class TaskExecution<
       : withAbort(this.cancelPromise, signal);
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    this.controller.abort(this.closedError);
-    void this.cancel().catch(() => {
-      // Cooperative cancellation is best effort during close.
-    });
+  close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      this.controller.abort(this.closedError);
+      void this.cancel().catch(() => {
+        // Cooperative cancellation is best effort during close.
+      });
+    }
+    return Promise.resolve();
   }
 
   [Symbol.asyncDispose](): Promise<void> {
@@ -687,9 +690,7 @@ function responseResult(response: JsonRpcResponse): JsonValue {
   return response.result;
 }
 
-function terminalStatus(
-  status: TaskV1["status"] | DetailedTaskV2["status"],
-): boolean {
+function terminalStatus(status: TaskV1["status"]): boolean {
   return (
     status === "completed" || status === "failed" || status === "cancelled"
   );
@@ -701,24 +702,35 @@ class ImmediateExecution<
 > implements ToolExecutionCommon<TResult, TApplicationContext> {
   readonly kind = "immediate" as const;
   readonly handle = undefined;
-  private closed = false;
 
   constructor(
     readonly applicationContext: TApplicationContext,
     private readonly resultPromise: Promise<TResult>,
   ) {}
 
-  async *updates(_signal?: AbortSignal): AsyncIterable<TaskSnapshot> {}
+  updates(signal?: AbortSignal): AsyncIterable<TaskSnapshot> {
+    throwIfAborted(signal);
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () =>
+            Promise.resolve({ done: true as const, value: undefined }),
+        };
+      },
+    };
+  }
 
   result(): Promise<TResult> {
     return this.resultPromise;
   }
 
-  async cancel(_signal?: AbortSignal): Promise<void> {}
+  cancel(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    return Promise.resolve();
+  }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+  close(): Promise<void> {
+    return Promise.resolve();
   }
 
   [Symbol.asyncDispose](): Promise<void> {
@@ -835,7 +847,7 @@ class ManagedToolDeclarations implements ToolDeclarationProvider {
       }
       const result = response.result as Readonly<Record<string, JsonValue>>;
       const listed = result.tools;
-      if (!Array.isArray(listed))
+      if (!isJsonArray(listed))
         throw new Error("tools/list result must contain tools");
       for (const value of listed) {
         const parsed =
@@ -1283,16 +1295,18 @@ class PortTaskEnabledSession<
     );
   }
 
-  async resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
-    _reference: SerializedTaskReference,
-    _options?: {
+  resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
+    reference: SerializedTaskReference,
+    options?: {
       readonly resultCodec?: RuntimeCodec<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
     },
   ): Promise<ToolExecution<TResult, TApplicationContext>> {
+    void reference;
+    void options;
     this.assertUsable();
-    throw unsupported("Task resumption");
+    return Promise.reject(unsupported("Task resumption"));
   }
 
   private cleanupLateTaskCreation(
@@ -1327,14 +1341,18 @@ class PortTaskEnabledSession<
     });
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    for (const execution of this.activeTaskExecutions) {
-      void execution.close().catch(() => {});
+  close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      for (const execution of this.activeTaskExecutions) {
+        void execution.close().catch(() => {});
+      }
+      this.lifecycleController.abort(
+        new Error("Task-enabled session is closed"),
+      );
+      for (const dispose of this.disposeListeners) dispose();
     }
-    this.lifecycleController.abort(new Error("Task-enabled session is closed"));
-    for (const dispose of this.disposeListeners) dispose();
+    return Promise.resolve();
   }
 
   [Symbol.asyncDispose](): Promise<void> {

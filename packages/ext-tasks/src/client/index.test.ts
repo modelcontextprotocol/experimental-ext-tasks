@@ -25,6 +25,12 @@ import {
 const asJson = (value: unknown): JsonValue =>
   JSON.parse(JSON.stringify(value)) as JsonValue;
 
+const formatJson = (value: unknown): string =>
+  JSON.stringify(value) ?? "undefined";
+
+const asError = (reason: unknown): Error =>
+  reason instanceof Error ? reason : new Error(formatJson(reason));
+
 class FakePort implements ConnectedMcpSessionPort {
   readonly requests: JsonValue[] = [];
   readonly taskCapabilities: SessionTaskCapabilities;
@@ -271,6 +277,7 @@ describe("client tool executions", () => {
       const session = withTasks<{ readonly marker: string }>(port, {
         tools: { currentTool: () => undefined },
         onInputRequest: async (request, context) => {
+          await Promise.resolve();
           observed.push({ request, context });
           return input.result as never;
         },
@@ -304,6 +311,7 @@ describe("client tool executions", () => {
     const session = withTasks(port, {
       tools: { currentTool: () => undefined },
       onInputRequest: async () => {
+        await Promise.resolve();
         throw new Error("declined");
       },
     });
@@ -325,6 +333,7 @@ describe("client tool executions", () => {
     const session = withTasks<string>(port, {
       tools: { currentTool: () => undefined },
       onInputRequest: async () => {
+        await Promise.resolve();
         handlerCalls += 1;
         return { action: "accept" } as never;
       },
@@ -425,6 +434,7 @@ describe("client tool executions", () => {
           const port = new FakePort({ generation: "v1", capabilities });
           let taskSelected = false;
           port.dispatchHandler = async (request) => {
+            await Promise.resolve();
             const record = expectRecord(request);
             if (record.method === "tools/call") {
               return taskSelected
@@ -444,7 +454,7 @@ describe("client tool executions", () => {
             }
             if (record.method === "tasks/result")
               return { kind: "result", result: { content: [] } };
-            throw new Error(`unexpected method ${String(record.method)}`);
+            throw new Error(`unexpected method ${formatJson(record.method)}`);
           };
           let lookups = 0;
           const tool: ToolV1 = {
@@ -506,6 +516,7 @@ describe("client tool executions", () => {
   it("manages initial tool declarations only when no provider is supplied", async () => {
     const managed = new FakePort({ generation: "v1", capabilities: {} });
     managed.dispatchHandler = async (request) => {
+      await Promise.resolve();
       const record = expectRecord(request);
       if (record.method === "tools/list") {
         return {
@@ -540,12 +551,13 @@ describe("client tool executions", () => {
     const port = new FakePort({ generation: "v1", capabilities: {} });
     let attempts = 0;
     port.dispatchHandler = async (request) => {
+      await Promise.resolve();
       const record = expectRecord(request);
       if (record.method !== "tools/list")
         return { kind: "result", result: asJson({ content: [] }) };
       attempts += 1;
       if (attempts === 1) throw new DispatchError("temporary", true);
-      const params = expectRecord(record.params as JsonValue);
+      const params = expectRecord(record.params);
       if (params.cursor === undefined) {
         return {
           kind: "result",
@@ -582,7 +594,7 @@ describe("client tool executions", () => {
     port.dispatchHandler = (request, options) => {
       const record = expectRecord(request);
       if (record.method === "tools/call") {
-        const params = expectRecord(record.params as JsonValue);
+        const params = expectRecord(record.params);
         return Promise.resolve(
           params.task === undefined
             ? { kind: "result", result: { content: [] } }
@@ -603,7 +615,7 @@ describe("client tool executions", () => {
       if (record.method === "tasks/result")
         return Promise.resolve({ kind: "result", result: { content: [] } });
       if (record.method !== "tools/list")
-        throw new Error(`unexpected method ${String(record.method)}`);
+        throw new Error(`unexpected method ${formatJson(record.method)}`);
       listCount += 1;
       if (listCount === 1) {
         return Promise.resolve({
@@ -657,6 +669,7 @@ describe("client tool executions", () => {
     const errors: Error[] = [];
     const duplicatePort = new FakePort({ generation: "v1", capabilities: {} });
     duplicatePort.dispatchHandler = async (request) => {
+      await Promise.resolve();
       const record = expectRecord(request);
       if (record.method === "tools/list") {
         return {
@@ -772,6 +785,7 @@ describe("client tool executions", () => {
       execution: { taskSupport: "required" },
     };
     port.dispatchHandler = async (request) => {
+      await Promise.resolve();
       const record = expectRecord(request);
       if (record.method === "tools/call") {
         return {
@@ -817,7 +831,7 @@ describe("client tool executions", () => {
           }),
         };
       }
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, { tools: { currentTool: () => tool } });
     const execution = await session.callTool("long");
@@ -863,6 +877,7 @@ describe("client tool executions", () => {
     const port = new FakePort({ generation: "v2", capabilities: {} });
     const tool = { name: "long", inputSchema: { type: "object" } };
     port.dispatchHandler = async (request) => {
+      await Promise.resolve();
       const record = expectRecord(request);
       if (record.method === "tools/call") {
         return {
@@ -896,7 +911,7 @@ describe("client tool executions", () => {
       }
       if (record.method === "tasks/cancel")
         return { kind: "result", result: { resultType: "complete" } };
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, { tools: { currentTool: () => tool } });
     const execution = await session.callTool("long");
@@ -944,7 +959,7 @@ describe("client tool executions", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(options.signal?.reason),
+            () => reject(asError(options.signal?.reason)),
             { once: true },
           );
         });
@@ -952,7 +967,7 @@ describe("client tool executions", () => {
         cancelCalls += 1;
         return { kind: "result", result: { resultType: "complete" } };
       }
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1007,7 +1022,7 @@ describe("client tool executions", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(options.signal?.reason),
+            () => reject(asError(options.signal?.reason)),
             { once: true },
           );
         });
@@ -1015,7 +1030,7 @@ describe("client tool executions", () => {
         cancelCalls += 1;
         return { kind: "result", result: { resultType: "complete" } };
       }
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1036,6 +1051,7 @@ describe("client tool executions", () => {
         const port = new FakePort({ generation: "v2", capabilities: {} });
         let getCalls = 0;
         port.dispatchHandler = async (request) => {
+          await Promise.resolve();
           const record = expectRecord(request);
           if (record.method === "tools/call")
             return {
@@ -1066,7 +1082,7 @@ describe("client tool executions", () => {
               }),
             };
           }
-          throw new Error(`unexpected method ${String(record.method)}`);
+          throw new Error(`unexpected method ${formatJson(record.method)}`);
         };
         const session = withTasks(port, {
           tools: {
@@ -1108,7 +1124,7 @@ describe("client tool executions", () => {
             return new Promise((_resolve, reject) => {
               options?.signal?.addEventListener(
                 "abort",
-                () => reject(options.signal?.reason),
+                () => reject(asError(options.signal?.reason)),
                 { once: true },
               );
             });
@@ -1118,7 +1134,7 @@ describe("client tool executions", () => {
               throw new DispatchError("cancel failed", retryable);
             return { kind: "result", result: { resultType: "complete" } };
           }
-          throw new Error(`unexpected method ${String(record.method)}`);
+          throw new Error(`unexpected method ${formatJson(record.method)}`);
         };
         const session = withTasks(port, {
           tools: {
@@ -1160,7 +1176,7 @@ describe("client tool executions", () => {
       if (record.method === "tasks/get") return new Promise(() => {});
       if (record.method === "tasks/cancel")
         return { kind: "result", result: { resultType: "complete" } };
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1239,6 +1255,7 @@ describe("client tool executions", () => {
     const port = new FakePort({ generation: "v2", capabilities: {} });
     let getCalls = 0;
     port.dispatchHandler = async (request) => {
+      await Promise.resolve();
       const record = expectRecord(request);
       if (record.method === "tools/call")
         return {
@@ -1256,7 +1273,7 @@ describe("client tool executions", () => {
         getCalls += 1;
         return { kind: "error", error: { code: -32000, message: "failed" } };
       }
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1279,6 +1296,7 @@ describe("client tool executions", () => {
           const port = new FakePort({ generation: "v2", capabilities: {} });
           let getCalls = 0;
           port.dispatchHandler = async (request) => {
+            await Promise.resolve();
             const record = expectRecord(request);
             if (record.method === "tools/call")
               return {
@@ -1319,7 +1337,7 @@ describe("client tool executions", () => {
                 ),
               };
             }
-            throw new Error(`unexpected method ${String(record.method)}`);
+            throw new Error(`unexpected method ${formatJson(record.method)}`);
           };
           const session = withTasks(port, {
             tools: {
@@ -1377,7 +1395,7 @@ describe("client tool executions", () => {
         cancelCalls += 1;
         return { kind: "result", result: { resultType: "complete" } };
       }
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1457,12 +1475,12 @@ describe("client tool executions", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(options.signal?.reason),
+            () => reject(asError(options.signal?.reason)),
             { once: true },
           );
         });
       if (record.method === "tasks/cancel") return new Promise(() => {});
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1497,13 +1515,13 @@ describe("client tool executions", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(options.signal?.reason),
+            () => reject(asError(options.signal?.reason)),
             { once: true },
           );
         });
       if (record.method === "tasks/cancel")
         return { kind: "result", result: { resultType: "complete" } };
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1542,14 +1560,18 @@ describe("client tool executions", () => {
           throw new Error("observation signal is required");
         observationSignal = signal;
         return new Promise((_resolve, reject) =>
-          signal.addEventListener("abort", () => reject(signal.reason), {
-            once: true,
-          }),
+          signal.addEventListener(
+            "abort",
+            () => reject(asError(signal.reason)),
+            {
+              once: true,
+            },
+          ),
         );
       }
       if (record.method === "tasks/cancel")
         return { kind: "result", result: { resultType: "complete" } };
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1603,7 +1625,7 @@ describe("client tool executions", () => {
         return new Promise((_resolve, reject) =>
           options?.signal?.addEventListener(
             "abort",
-            () => reject(options.signal?.reason),
+            () => reject(asError(options.signal?.reason)),
             { once: true },
           ),
         );
@@ -1614,7 +1636,7 @@ describe("client tool executions", () => {
         });
         return { kind: "result", result: { resultType: "complete" } };
       }
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
       tools: {
@@ -1663,11 +1685,11 @@ describe("client tool executions", () => {
         return new Promise((_resolve, reject) =>
           options?.signal?.addEventListener(
             "abort",
-            () => reject(options.signal?.reason),
+            () => reject(asError(options.signal?.reason)),
             { once: true },
           ),
         );
-      throw new Error(`unexpected method ${String(record.method)}`);
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, { tools: { currentTool: () => tool } });
     const execution = await session.callTool("x");

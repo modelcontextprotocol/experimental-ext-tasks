@@ -60,7 +60,7 @@ export function isJsonValue(value: unknown): value is JsonValue {
         candidate.length === Object.keys(candidate).length &&
         candidate.every(visit);
     } else {
-      const prototype = Object.getPrototypeOf(candidate);
+      const prototype = Reflect.getPrototypeOf(candidate);
       valid =
         (prototype === Object.prototype || prototype === null) &&
         Object.values(candidate).every(visit);
@@ -69,6 +69,12 @@ export function isJsonValue(value: unknown): value is JsonValue {
     return valid;
   };
   return visit(value);
+}
+
+export function isJsonArray(
+  value: JsonValue | undefined,
+): value is readonly JsonValue[] {
+  return Array.isArray(value);
 }
 
 export function createRuntimeCodec<T>(

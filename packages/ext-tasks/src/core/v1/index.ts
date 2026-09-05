@@ -6,6 +6,7 @@ import {
   expectNumber,
   expectRecord,
   expectString,
+  isJsonArray,
   type DecodePath,
   type JsonValue,
   type RuntimeCodec,
@@ -300,21 +301,11 @@ export const ToolV1Codec: RuntimeCodec<ToolV1> = createRuntimeCodec<ToolV1>(
   (value, path) => {
     const record = expectRecord(value, path);
     const inputSchema = jsonRecord(record.inputSchema, at(path, "inputSchema"));
-    literal(
-      inputSchema as Record<string, JsonValue>,
-      "type",
-      "object",
-      at(path, "inputSchema"),
-    );
+    literal(inputSchema, "type", "object", at(path, "inputSchema"));
     let outputSchema: ToolV1["outputSchema"];
     if (record.outputSchema !== undefined) {
       const decoded = jsonRecord(record.outputSchema, at(path, "outputSchema"));
-      literal(
-        decoded as Record<string, JsonValue>,
-        "type",
-        "object",
-        at(path, "outputSchema"),
-      );
+      literal(decoded, "type", "object", at(path, "outputSchema"));
       outputSchema = decoded as ToolV1["outputSchema"];
     }
     let execution: ToolExecutionV1 | undefined;
@@ -333,7 +324,7 @@ export const ToolV1Codec: RuntimeCodec<ToolV1> = createRuntimeCodec<ToolV1>(
     }
     let icons: ToolV1["icons"];
     if (record.icons !== undefined) {
-      if (!Array.isArray(record.icons))
+      if (!isJsonArray(record.icons))
         throw new ProtocolDecodeError("expected array", at(path, "icons"));
       icons = record.icons.map((icon, index) =>
         jsonRecord(icon, at(at(path, "icons"), index)),
@@ -448,7 +439,7 @@ export const CreateTaskResultV1Codec: RuntimeCodec<CreateTaskResultV1> =
   createRuntimeCodec<CreateTaskResultV1>((value, path) => {
     const record = expectRecord(value, path);
     return {
-      task: decodeTask(record.task as JsonValue, at(path, "task")),
+      task: decodeTask(record.task, at(path, "task")),
       ...(record._meta === undefined
         ? {}
         : { _meta: jsonRecord(record._meta, at(path, "_meta")) }),
@@ -457,7 +448,7 @@ export const CreateTaskResultV1Codec: RuntimeCodec<CreateTaskResultV1> =
 export const CallToolResultV1Codec: RuntimeCodec<CallToolResultV1> =
   createRuntimeCodec<CallToolResultV1>((value, path) => {
     const record = expectRecord(value, path);
-    if (!Array.isArray(record.content))
+    if (!isJsonArray(record.content))
       throw new ProtocolDecodeError("expected array", at(path, "content"));
     record.content.forEach((item, index) =>
       decodeContentBlock(item, at(at(path, "content"), index)),
@@ -531,7 +522,7 @@ export const ListTasksRequestV1Codec: RuntimeCodec<ListTasksRequestV1> =
 export const ListTasksResultV1Codec: RuntimeCodec<ListTasksResultV1> =
   createRuntimeCodec<ListTasksResultV1>((value, path) => {
     const record = expectRecord(value, path);
-    if (!Array.isArray(record.tasks))
+    if (!isJsonArray(record.tasks))
       throw new ProtocolDecodeError("expected array", at(path, "tasks"));
     return {
       tasks: record.tasks.map((task, index) =>
@@ -557,7 +548,7 @@ export const TaskStatusNotificationV1Codec: RuntimeCodec<TaskStatusNotificationV
       jsonrpc: "2.0",
       method: "notifications/tasks/status",
       params: {
-        ...decodeTask(record.params as JsonValue, at(path, "params")),
+        ...decodeTask(record.params, at(path, "params")),
         ...(paramsRecord._meta === undefined
           ? {}
           : {

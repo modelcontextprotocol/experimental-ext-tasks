@@ -6,6 +6,7 @@ import {
   expectNumber,
   expectRecord,
   expectString,
+  isJsonArray,
   type DecodePath,
   type JsonValue,
   type RuntimeCodec,
@@ -323,7 +324,7 @@ function decodeImplementation(value: JsonValue, path: DecodePath): void {
   optionalString(object, "description", path);
   optionalString(object, "websiteUrl", path);
   if (object.icons !== undefined) {
-    if (!Array.isArray(object.icons))
+    if (!isJsonArray(object.icons))
       throw new ProtocolDecodeError("expected array", [...path, "icons"]);
     object.icons.forEach((icon, index) =>
       decodeIcon(icon, [...path, "icons", index]),
@@ -354,7 +355,7 @@ function decodeContentBlock(
     if (object.size !== undefined)
       expectInteger(object.size, [...path, "size"]);
     if (object.icons !== undefined) {
-      if (!Array.isArray(object.icons))
+      if (!isJsonArray(object.icons))
         throw new ProtocolDecodeError("expected array", [...path, "icons"]);
       object.icons.forEach((icon, index) =>
         decodeIcon(icon, [...path, "icons", index]),
@@ -414,7 +415,7 @@ function decodeTool(value: JsonValue, path: DecodePath): ToolV2 {
       optionalBoolean(annotations, key, [...path, "annotations"]);
   }
   if (object.icons !== undefined) {
-    if (!Array.isArray(object.icons))
+    if (!isJsonArray(object.icons))
       throw new ProtocolDecodeError("expected array", [...path, "icons"]);
     object.icons.forEach((icon, index) =>
       decodeIcon(icon, [...path, "icons", index]),
@@ -430,7 +431,7 @@ function decodeCallToolResult(
 ): CallToolResultV2 {
   const object = expectRecord(value, path);
   expectString(object.resultType, [...path, "resultType"]);
-  if (!Array.isArray(object.content))
+  if (!isJsonArray(object.content))
     throw new ProtocolDecodeError("expected array", [...path, "content"]);
   object.content.forEach((block, index) =>
     decodeContentBlock(block, [...path, "content", index]),
@@ -486,7 +487,7 @@ function decodeError(value: JsonValue, path: DecodePath): ErrorV2 {
   return {
     code: expectInteger(object.code, [...path, "code"]),
     message: expectString(object.message, [...path, "message"]),
-    ...(has(object, "data") ? { data: object.data as JsonValue } : {}),
+    ...(has(object, "data") ? { data: object.data } : {}),
   };
 }
 
@@ -506,7 +507,7 @@ function decodeInputRequest(
   }
   return {
     method,
-    params: expectRecord(object.params as JsonValue, [...path, "params"]),
+    params: expectRecord(object.params, [...path, "params"]),
   };
 }
 function decodeInputRequests(
@@ -568,7 +569,7 @@ function decodeDetailedTask(
       return {
         ...task,
         status: task.status,
-        inputRequests: decodeInputRequests(object.inputRequests as JsonValue, [
+        inputRequests: decodeInputRequests(object.inputRequests, [
           ...path,
           "inputRequests",
         ]),
@@ -577,13 +578,13 @@ function decodeDetailedTask(
       return {
         ...task,
         status: task.status,
-        result: expectRecord(object.result as JsonValue, [...path, "result"]),
+        result: expectRecord(object.result, [...path, "result"]),
       };
     case "failed":
       return {
         ...task,
         status: task.status,
-        error: decodeError(object.error as JsonValue, [...path, "error"]),
+        error: decodeError(object.error, [...path, "error"]),
       };
     case "working":
       return { ...task, status: task.status };
@@ -599,7 +600,7 @@ function decodeRpcRequest(value: JsonValue, path: DecodePath, method: string) {
   return {
     object,
     id: expectRequestId(object.id, [...path, "id"]),
-    params: expectRecord(object.params as JsonValue, [...path, "params"]),
+    params: expectRecord(object.params, [...path, "params"]),
   };
 }
 function decodeCompleteResult(value: JsonValue, path: DecodePath) {
@@ -716,10 +717,11 @@ export const UpdateTaskRequestV2Codec: RuntimeCodec<UpdateTaskRequestV2> =
       method: "tasks/update",
       params: {
         taskId: expectString(params.taskId, [...path, "params", "taskId"]),
-        inputResponses: decodeInputResponses(
-          params.inputResponses as JsonValue,
-          [...path, "params", "inputResponses"],
-        ),
+        inputResponses: decodeInputResponses(params.inputResponses, [
+          ...path,
+          "params",
+          "inputResponses",
+        ]),
       },
     };
   });
@@ -827,10 +829,7 @@ export const TaskStatusNotificationV2Codec: RuntimeCodec<TaskStatusNotificationV
     return {
       jsonrpc: "2.0",
       method: "notifications/tasks",
-      params: decodeDetailedTask(object.params as JsonValue, [
-        ...path,
-        "params",
-      ]),
+      params: decodeDetailedTask(object.params, [...path, "params"]),
     };
   });
 

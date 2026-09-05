@@ -125,13 +125,13 @@ describe("V1 generated wire contracts", () => {
     for (const [codec, arbitrary] of cases)
       fc.assert(
         fc.property(arbitrary, (request) => {
-          expectRoundTrip(codec as never, request);
+          expectRoundTrip(codec, request);
           expect(
-            codec.parse({ ...request, method: "tasks/nope" } as never).success,
+            codec.parse({ ...request, method: "tasks/nope" }).success,
           ).toBe(false);
-          expect(
-            codec.parse({ ...request, jsonrpc: "1.0" } as never).success,
-          ).toBe(false);
+          expect(codec.parse({ ...request, jsonrpc: "1.0" }).success).toBe(
+            false,
+          );
           const { params: ignored, ...withoutParams } = request;
           void ignored;
           expect(codec.parse(withoutParams as never).success).toBe(false);
