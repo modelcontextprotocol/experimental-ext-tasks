@@ -246,6 +246,11 @@ async function checkPackedContract() {
     const [{ filename, files }] = JSON.parse(packOutput);
     const packedPaths = files.map(({ path }) => path);
     assert.equal(
+      packedPaths.includes("dist/client/index.js"),
+      true,
+      "Tarball is missing dist/client/index.js",
+    );
+    assert.equal(
       packedPaths.some((path) =>
         /(^|\/)(src|test-support|tests?)(\/|$)/u.test(path),
       ),
