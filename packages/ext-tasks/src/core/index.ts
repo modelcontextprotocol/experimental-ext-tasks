@@ -35,10 +35,15 @@ export type TaskSnapshot =
   | { readonly generation: "v1"; readonly task: TaskV1 }
   | { readonly generation: "v2"; readonly task: TaskV2 | DetailedTaskV2 };
 
+/** Brands a string as a task identifier without runtime validation or transformation. */
 export function taskId(value: string): TaskId {
   return value as TaskId;
 }
 
+/**
+ * Checks recursively whether a value is JSON-compatible, rejecting non-finite numbers,
+ * sparse arrays, non-plain objects, and cyclic references.
+ */
 export function isJsonValue(value: unknown): value is JsonValue {
   const visiting = new WeakSet<object>();
   const visit = (candidate: unknown): boolean => {

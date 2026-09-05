@@ -33,6 +33,7 @@ import {
   type ConnectedMcpSessionPort,
 } from "./port.js";
 
+/** Creates an execution controller for an existing V2 task. */
 export function createTaskExecutionV2<TResult, TApplicationContext>(options: {
   readonly applicationContext: TApplicationContext;
   readonly handle: TaskHandle & { readonly generation: "v2" };

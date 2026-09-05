@@ -3,9 +3,14 @@ import {
   ProtocolDecodeError,
   createRuntimeCodec,
   expectEnum,
+  expectInteger,
+  expectLiteral as expectConst,
   expectNumber,
+  expectOptionalBoolean,
+  expectOptionalRecord as optionalRecord,
   expectRecord,
   expectString,
+  hasOwn as has,
   isJsonArray,
   type DecodePath,
 } from "../internal/codec.js";
@@ -59,32 +64,12 @@ const inputMethods = [
   "elicitation/create",
 ] as const;
 
-function has(record: Record<string, JsonValue>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(record, key);
-}
-function expectInteger(value: JsonValue | undefined, path: DecodePath): number {
-  const number = expectNumber(value, path);
-  if (!Number.isInteger(number))
-    throw new ProtocolDecodeError("expected integer", path);
-  return number;
-}
 function expectRequestId(
   value: JsonValue | undefined,
   path: DecodePath,
 ): RequestIdV2 {
   if (typeof value === "string") return value;
   return expectInteger(value, path);
-}
-function expectConst(
-  value: JsonValue | undefined,
-  expected: string,
-  path: DecodePath,
-): void {
-  if (value !== expected)
-    throw new ProtocolDecodeError(`expected ${expected}`, path);
-}
-function optionalRecord(value: JsonValue | undefined, path: DecodePath) {
-  return value === undefined ? undefined : expectRecord(value, path);
 }
 function optionalString(
   object: Record<string, JsonValue>,
@@ -98,8 +83,7 @@ function optionalBoolean(
   key: string,
   path: DecodePath,
 ): void {
-  if (object[key] !== undefined && typeof object[key] !== "boolean")
-    throw new ProtocolDecodeError("expected boolean", [...path, key]);
+  expectOptionalBoolean(object[key], [...path, key]);
 }
 function optionalStringArray(
   object: Record<string, JsonValue>,

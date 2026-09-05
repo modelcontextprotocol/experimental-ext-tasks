@@ -1,4 +1,5 @@
 import eslint from "@eslint/js";
+import jsdoc from "eslint-plugin-jsdoc";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
@@ -10,6 +11,10 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
   {
     files: ["src/**/*.ts", "test-support/**/*.ts", "vitest.config.ts"],
+    plugins: { jsdoc },
+    rules: {
+      "jsdoc/require-jsdoc": ["error", { publicOnly: true }],
+    },
     languageOptions: {
       globals: globals.browser,
       parserOptions: {

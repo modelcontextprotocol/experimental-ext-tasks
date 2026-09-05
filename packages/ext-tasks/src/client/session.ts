@@ -639,6 +639,7 @@ class PortTaskEnabledSession<
   }
 }
 
+/** Adds task execution support to a connected session port or MCP SDK client. */
 export function withTasks<TApplicationContext = void>(
   session: ConnectedMcpSessionPort,
   options?: WithTasksOptions<TApplicationContext>,

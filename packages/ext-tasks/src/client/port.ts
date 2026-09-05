@@ -48,6 +48,7 @@ export class DispatchError extends Error {
     this.retryable = retryable;
   }
 }
+/** Races a promise against an optional abort signal and releases its listener. */
 export async function withAbort<T>(
   promise: Promise<T>,
   signal?: AbortSignal,
@@ -71,6 +72,7 @@ export async function withAbort<T>(
   }
 }
 
+/** Links abort signals into one disposable lifecycle. */
 export function linkAbortSignals(
   ...signals: readonly (AbortSignal | undefined)[]
 ): {
@@ -99,6 +101,7 @@ export function linkAbortSignals(
   };
 }
 
+/** Dispatches a request with the retry policy for its observation or mutation intent. */
 export async function dispatchWithRetry(
   port: ConnectedMcpSessionPort,
   request: JsonValue,
@@ -120,12 +123,14 @@ export async function dispatchWithRetry(
   }
 }
 
+/** Decodes a successful JSON value or throws its protocol decode error. */
 export function decodeResult<T>(codec: RuntimeCodec<T>, value: JsonValue): T {
   const decoded = codec.parse(value);
   if (!decoded.success) throw decoded.error;
   return decoded.value;
 }
 
+/** Unwraps a JSON-RPC result or throws the response error. */
 export function responseResult(response: JsonRpcResponse): JsonValue {
   if (response.kind === "error") throw new JsonRpcResponseError(response.error);
   return response.result;

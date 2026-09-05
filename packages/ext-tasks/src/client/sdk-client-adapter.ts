@@ -93,6 +93,7 @@ type ClientPublicSurface = Pick<
 
 const adaptedClients = new WeakSet<object>();
 
+/** Returns whether a value implements the connected MCP session port contract. */
 export function isConnectedMcpSessionPort(
   value: unknown,
 ): value is ConnectedMcpSessionPort {
@@ -109,6 +110,7 @@ export function isConnectedMcpSessionPort(
   );
 }
 
+/** Returns whether a value exposes the MCP SDK client methods required by this adapter. */
 export function isClientPublicSurface(
   value: unknown,
 ): value is ClientPublicSurface {
@@ -279,6 +281,7 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
   }
 }
 
+/** Creates a disposable connected session port backed by an MCP SDK client. */
 export function createSessionPortFromClient(
   client: Client,
   endpointId: string,

@@ -19,12 +19,14 @@ import type { SessionTaskCapabilities } from "./port.js";
 import { linkAbortSignals, withAbort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
 
+/** Selects the default tool-result codec for the negotiated task generation. */
 export function defaultResultCodec(
   generation: SessionTaskCapabilities["generation"],
 ): RuntimeCodec<CallToolResultV1 | CallToolResultV2> {
   return generation === "v2" ? CallToolResultV2Codec : CallToolResultV1Codec;
 }
 
+/** Normalizes an invalidation or abort reason to an Error instance. */
 export function reasonAsError(reason: unknown): Error {
   if (reason instanceof Error) return reason;
   return new Error(
@@ -330,6 +332,7 @@ export class TaskExecution<
   }
 }
 
+/** Produces stable JSON-like text by sorting object keys recursively. */
 export function deterministicJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     const encoded = JSON.stringify(value);
@@ -345,6 +348,7 @@ export function deterministicJson(value: unknown): string {
     .join(",")}}`;
 }
 
+/** Returns whether a V1 task status is terminal. */
 export function terminalStatus(status: TaskV1["status"]): boolean {
   return (
     status === "completed" || status === "failed" || status === "cancelled"

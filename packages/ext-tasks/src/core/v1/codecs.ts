@@ -1,9 +1,12 @@
 /** MCP Tasks V1 runtime codecs. */
 import {
   ProtocolDecodeError,
+  childPath as at,
   createRuntimeCodec,
   expectEnum,
-  expectNumber,
+  expectInteger,
+  expectLiteral,
+  expectOptionalBoolean,
   expectRecord,
   expectString,
   isJsonArray,
@@ -39,19 +42,12 @@ interface JsonRpcRequestV1<M extends string, P> {
   readonly params: P;
 }
 
-function at(path: DecodePath, key: string | number): DecodePath {
-  return [...path, key];
-}
 function optionalBoolean(
   record: Record<string, JsonValue>,
   key: string,
   path: DecodePath,
 ): boolean | undefined {
-  const value = record[key];
-  if (value === undefined) return undefined;
-  if (typeof value !== "boolean")
-    throw new ProtocolDecodeError("expected boolean", at(path, key));
-  return value;
+  return expectOptionalBoolean(record[key], at(path, key));
 }
 function jsonRecord(
   value: JsonValue | undefined,
@@ -76,8 +72,7 @@ function literal(
   expected: string,
   path: DecodePath,
 ): void {
-  if (record[key] !== expected)
-    throw new ProtocolDecodeError(`expected ${expected}`, at(path, key));
+  expectLiteral(record[key], expected, at(path, key));
 }
 function decodeId(
   value: JsonValue | undefined,
@@ -86,12 +81,6 @@ function decodeId(
   if (typeof value !== "string" && typeof value !== "number")
     throw new ProtocolDecodeError("expected request id", path);
   return value;
-}
-function expectInteger(value: JsonValue | undefined, path: DecodePath): number {
-  const number = expectNumber(value, path);
-  if (!Number.isInteger(number))
-    throw new ProtocolDecodeError("expected integer", path);
-  return number;
 }
 function decodeContentBlock(
   value: JsonValue,

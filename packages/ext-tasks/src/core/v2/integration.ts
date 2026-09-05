@@ -63,6 +63,9 @@ export const isTaskStatusNotificationV2: (
 ): value is TaskStatusNotificationV2 =>
   parsed<TaskStatusNotificationV2>(TaskStatusNotificationV2Codec, value);
 
+/**
+ * Recognizes a decoded task-creation result only when it belongs to `tools/call`.
+ */
 export function isToolCallTaskResultV2(
   method: string,
   value: unknown,
@@ -70,6 +73,10 @@ export function isToolCallTaskResultV2(
   return method === "tools/call" && isCreateTaskResultV2(value);
 }
 
+/**
+ * Checks for the tasks extension inside object-shaped client capability metadata,
+ * returning false for malformed or missing containers.
+ */
 export function hasTaskClientCapabilityV2(value: unknown): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     return false;
@@ -93,6 +100,9 @@ export function hasTaskClientCapabilityV2(value: unknown): boolean {
     Object.prototype.hasOwnProperty.call(extensions, TASKS_EXTENSION_ID_V2)
   );
 }
+/**
+ * Narrows an object-shaped server capability envelope when its extensions own the tasks key.
+ */
 export function hasTaskServerCapabilityV2(
   value: unknown,
 ): value is ServerTaskCapabilityEnvelopeV2 {
@@ -107,6 +117,10 @@ export function hasTaskServerCapabilityV2(
   );
 }
 
+/**
+ * Returns a copy with the client tasks capability installed in `_meta`, preserving existing
+ * object-shaped metadata and replacing malformed metadata with a fresh object.
+ */
 export function withTaskCapabilityV2<
   T extends Readonly<Record<string, JsonValue>>,
 >(params: T): T & Readonly<Record<string, JsonValue>> {
@@ -124,6 +138,10 @@ export function withTaskCapabilityV2<
   };
 }
 
+/**
+ * Returns a filter with deduplicated task IDs, preserving existing object-shaped
+ * notification fields and replacing malformed notification data.
+ */
 export function contributeTaskFilterV2<
   T extends Readonly<Record<string, JsonValue>>,
 >(
@@ -146,6 +164,10 @@ export function contributeTaskFilterV2<
     notifications: { ...prior, taskIds: [...new Set(taskIds)] },
   };
 }
+/**
+ * Copies task IDs from an accepted notification filter, or returns an empty array when
+ * any enclosing value is malformed or any ID is not a string.
+ */
 export function readAcceptedTaskIdsV2(value: unknown): readonly string[] {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     return [];

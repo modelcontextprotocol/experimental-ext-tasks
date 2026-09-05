@@ -1,6 +1,7 @@
 import type { JsonValue, TaskGeneration, TaskId } from "../core/index.js";
 import type { IncomingServerRequest, JsonRpcResponse } from "./port.js";
 
+/** Returns object-valued request parameters, defaulting an omitted value to empty. */
 export function requestParams(
   request: Readonly<Record<string, JsonValue>>,
 ): Readonly<Record<string, JsonValue>> {
@@ -36,10 +37,12 @@ export interface V1TaskInputCandidate<TApplicationContext> {
 
 let nextExecutionId = 0;
 
+/** Allocates a process-local identifier for an ordinary tool execution. */
 export function nextExecutionIdentifier(): string {
   return `execution-${++nextExecutionId}`;
 }
 
+/** Returns the conservative fallback response for an unhandled server request. */
 export function defaultServerRequestResponse(
   incoming: IncomingServerRequest,
 ): JsonRpcResponse {
@@ -56,6 +59,7 @@ export function defaultServerRequestResponse(
   return { kind: "error", error: { code: -32603, message: "Internal error" } };
 }
 
+/** Throws the abort reason when a signal has already been aborted. */
 export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted !== true) return;
   throw signal.reason instanceof Error
