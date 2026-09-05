@@ -27,15 +27,21 @@ import {
 import {
   CallToolResultV2Codec,
   CancelTaskResultV2Codec,
+  CreateMessageResultV2Codec,
   CreateTaskResultV2Codec,
+  ElicitResultV2Codec,
   GetTaskResultV2Codec,
+  ListRootsResultV2Codec,
   TaskStatusNotificationV2Codec,
   ToolV2Codec,
+  UpdateTaskResultV2Codec,
   isCreateTaskResultV2,
   withTaskCapabilityV2,
   type CallToolResultV2,
   type DetailedTaskV2,
   type ErrorV2,
+  type InputRequestV2,
+  type InputResponseV2,
   type TaskExtensionCapabilitiesV2,
   type TaskEligibleMethodV2,
   type ToolV2,
@@ -321,8 +327,6 @@ function unsupported(feature: string): Error {
 }
 
 const DEFAULT_TASK_POLL_INTERVAL_MS = 10;
-const V2_INPUT_REQUIRED_UNSUPPORTED_MESSAGE =
-  "V2 input_required tasks are not supported until tasks/update is available";
 
 type TaskTurn =
   { readonly sequence: number; readonly snapshot: TaskSnapshot } | undefined;
@@ -341,6 +345,7 @@ type TaskDriver<TResult> = (
   cancelledError: Error,
   closedError: Error,
   isClosed: () => boolean,
+  inputSignal: AbortSignal,
 ) => Promise<TResult>;
 
 class TaskExecution<
@@ -349,6 +354,7 @@ class TaskExecution<
 > implements ToolExecutionCommon<TResult, TApplicationContext> {
   readonly kind = "task" as const;
   private readonly controller = new AbortController();
+  private readonly inputController = new AbortController();
   private readonly cancellationController = new AbortController();
   private readonly resultPromise: Promise<TResult>;
   private readonly cancelledError = new Error("Task was cancelled");
@@ -375,6 +381,8 @@ class TaskExecution<
     lifecycleSignal?: AbortSignal,
   ) {
     this.initialSnapshot = initialSnapshot;
+    if (terminalStatus(initialSnapshot.task.status))
+      this.inputController.abort();
     this.lastAcceptedBytes = deterministicJson(initialSnapshot);
     if (lifecycleSignal !== undefined) {
       const abort = (): void => this.controller.abort(lifecycleSignal.reason);
@@ -390,6 +398,7 @@ class TaskExecution<
       this.cancelledError,
       this.closedError,
       () => this.closed,
+      this.inputController.signal,
     );
   }
 
@@ -398,6 +407,7 @@ class TaskExecution<
     if (snapshot.task.taskId !== this.handle.taskId) return;
     const bytes = deterministicJson(snapshot);
     if (terminalStatus(snapshot.task.status)) {
+      this.inputController.abort();
       if (this.terminalSnapshotBytes === undefined) {
         this.terminalSnapshot = snapshot;
         this.terminalSnapshotBytes = bytes;
@@ -459,6 +469,7 @@ class TaskExecution<
     if (bytes === this.lastAcceptedBytes) return;
     this.lastAcceptedBytes = bytes;
     if (terminalStatus(snapshot.task.status)) {
+      this.inputController.abort();
       if (bytes !== this.terminalSnapshotBytes) {
         this.terminalSnapshot ??= snapshot;
         this.terminalSnapshotBytes ??= bytes;
@@ -574,6 +585,14 @@ class TaskExecution<
     return this.resultPromise;
   }
 
+  inputSignal(): AbortSignal {
+    return this.inputController.signal;
+  }
+
+  endInputLifetime(): void {
+    this.inputController.abort();
+  }
+
   cancel(signal?: AbortSignal): Promise<void> {
     throwIfAborted(signal);
     this.cancelPromise ??= this.cancelTask(this.cancellationController.signal);
@@ -586,6 +605,7 @@ class TaskExecution<
     if (!this.closed) {
       this.closed = true;
       this.controller.abort(this.closedError);
+      this.inputController.abort(this.closedError);
       void this.cancel().catch(() => {
         // Cooperative cancellation is best effort during close.
       });
@@ -889,7 +909,18 @@ function requestParams(
 }
 
 interface OrdinaryInputCandidate<TApplicationContext> {
+  readonly lifetime: "basic";
   readonly generation: TaskGeneration;
+  readonly toolName: string;
+  readonly executionId: string;
+  readonly applicationContext: TApplicationContext;
+  readonly signal?: AbortSignal;
+}
+
+interface V1TaskInputCandidate<TApplicationContext> {
+  readonly lifetime: "task-v1";
+  readonly generation: "v1";
+  readonly taskId: TaskId;
   readonly toolName: string;
   readonly executionId: string;
   readonly applicationContext: TApplicationContext;
@@ -933,6 +964,10 @@ class PortTaskEnabledSession<
   private readonly ordinaryInputCandidates = new Map<
     string,
     OrdinaryInputCandidate<TApplicationContext>
+  >();
+  private readonly v1TaskInputCandidates = new Map<
+    string,
+    V1TaskInputCandidate<TApplicationContext>
   >();
   private readonly activeTaskExecutions = new Set<
     TaskExecution<unknown, TApplicationContext>
@@ -1041,6 +1076,7 @@ class PortTaskEnabledSession<
     const executionId = `execution-${++nextExecutionId}`;
     if (!callAsTaskV1) {
       this.ordinaryInputCandidates.set(executionId, {
+        lifetime: "basic",
         generation: generation === "none" ? "v1" : generation,
         toolName: name,
         executionId,
@@ -1094,89 +1130,96 @@ class PortTaskEnabledSession<
         originalOperation: "tools/call",
       };
       const initial: TaskSnapshot = { generation: "v1", task: created.task };
-      return this.trackTaskExecution(
-        new TaskExecution(
-          options.applicationContext as TApplicationContext,
-          handle,
-          initial,
-          async (
-            accept,
-            waitForTurn,
-            observe,
-            signal,
-            cancelledError,
-            closedError,
-            isClosed,
-          ) => {
-            let task = created.task;
-            let notificationSequence = 0;
-            while (!terminalStatus(task.status)) {
-              const turn = await waitForTurn(
-                notificationSequence,
-                Math.max(
-                  DEFAULT_TASK_POLL_INTERVAL_MS,
-                  task.pollInterval ?? DEFAULT_TASK_POLL_INTERVAL_MS,
-                ),
-              );
-              const observed =
-                turn ??
-                (await observe(notificationSequence, (observationSignal) =>
-                  dispatchWithRetry(
-                    this.port,
-                    { method: "tasks/get", params: { taskId: task.taskId } },
-                    observationSignal,
-                    "observe",
-                  ).then((response) => ({
-                    generation: "v1" as const,
-                    task: decodeResult(
-                      GetTaskResultV1Codec,
-                      responseResult(response),
-                    ),
-                  })),
-                ));
-              if (observed?.snapshot.generation !== "v1") continue;
-              notificationSequence = observed.sequence;
-              task = observed.snapshot.task;
-              if (!isClosed()) accept({ generation: "v1", task });
-            }
-            if (isClosed()) throw closedError;
-            if (task.status === "cancelled") throw cancelledError;
-            if (task.status === "failed")
-              throw new Error(task.statusMessage ?? "Task failed");
-            const taskResult = responseResult(
-              await dispatchWithRetry(
-                this.port,
-                { method: "tasks/result", params: { taskId: task.taskId } },
-                signal,
-                "observe",
+      const execution = new TaskExecution(
+        options.applicationContext as TApplicationContext,
+        handle,
+        initial,
+        async (
+          accept,
+          waitForTurn,
+          observe,
+          signal,
+          cancelledError,
+          closedError,
+          isClosed,
+        ) => {
+          let task = created.task;
+          let notificationSequence = 0;
+          while (!terminalStatus(task.status)) {
+            const turn = await waitForTurn(
+              notificationSequence,
+              Math.max(
+                DEFAULT_TASK_POLL_INTERVAL_MS,
+                task.pollInterval ?? DEFAULT_TASK_POLL_INTERVAL_MS,
               ),
             );
-            decodeResult(TaskResultV1Codec, taskResult);
-            return decodeResult(codec, taskResult);
-          },
-          async (signal) => {
-            const capabilities = this.port.taskCapabilities;
-            if (
-              capabilities.generation !== "v1" ||
-              capabilities.capabilities.cancel === undefined
-            )
-              throw new TaskCancellationUnsupportedError();
-            const cancelled = responseResult(
-              await dispatchWithRetry(
-                this.port,
-                {
-                  method: "tasks/cancel",
-                  params: { taskId: created.task.taskId },
-                },
-                signal,
-                "mutate",
-              ),
-            );
-            decodeResult(CancelTaskResultV1Codec, cancelled);
-          },
-          this.lifecycleController.signal,
-        ),
+            const observed =
+              turn ??
+              (await observe(notificationSequence, (observationSignal) =>
+                dispatchWithRetry(
+                  this.port,
+                  { method: "tasks/get", params: { taskId: task.taskId } },
+                  observationSignal,
+                  "observe",
+                ).then((response) => ({
+                  generation: "v1" as const,
+                  task: decodeResult(
+                    GetTaskResultV1Codec,
+                    responseResult(response),
+                  ),
+                })),
+              ));
+            if (observed?.snapshot.generation !== "v1") continue;
+            notificationSequence = observed.sequence;
+            task = observed.snapshot.task;
+            if (!isClosed()) accept({ generation: "v1", task });
+          }
+          if (isClosed()) throw closedError;
+          if (task.status === "cancelled") throw cancelledError;
+          if (task.status === "failed")
+            throw new Error(task.statusMessage ?? "Task failed");
+          const taskResult = responseResult(
+            await dispatchWithRetry(
+              this.port,
+              { method: "tasks/result", params: { taskId: task.taskId } },
+              signal,
+              "observe",
+            ),
+          );
+          decodeResult(TaskResultV1Codec, taskResult);
+          return decodeResult(codec, taskResult);
+        },
+        async (signal) => {
+          const capabilities = this.port.taskCapabilities;
+          if (
+            capabilities.generation !== "v1" ||
+            capabilities.capabilities.cancel === undefined
+          )
+            throw new TaskCancellationUnsupportedError();
+          const cancelled = responseResult(
+            await dispatchWithRetry(
+              this.port,
+              {
+                method: "tasks/cancel",
+                params: { taskId: created.task.taskId },
+              },
+              signal,
+              "mutate",
+            ),
+          );
+          decodeResult(CancelTaskResultV1Codec, cancelled);
+        },
+        this.lifecycleController.signal,
       );
+      return this.trackTaskExecution(execution, {
+        lifetime: "task-v1",
+        generation: "v1",
+        taskId: created.task.taskId as TaskId,
+        toolName: name,
+        executionId,
+        applicationContext: options.applicationContext as TApplicationContext,
+        signal: execution.inputSignal(),
+      });
     }
 
     if (generation === "v2" && isCreateTaskResultV2(wireResult)) {
@@ -1200,12 +1243,109 @@ class PortTaskEnabledSession<
             cancelledError,
             closedError,
             isClosed,
+            inputSignal,
           ) => {
             let status = created.status;
             let current: DetailedTaskV2 | undefined;
             let notificationSequence = 0;
-            if (status === "input_required")
-              throw new Error(V2_INPUT_REQUIRED_UNSUPPORTED_MESSAGE);
+            const acquiredInputs = new Map<string, string>();
+            const acquireInputs = async (
+              task: DetailedTaskV2,
+            ): Promise<void> => {
+              if (task.status !== "input_required") return;
+              const inputResponses: Record<string, InputResponseV2> = {};
+              for (const [inputKey, inputRequest] of Object.entries(
+                task.inputRequests,
+              )) {
+                const signature = deterministicJson(inputRequest);
+                const acquiredSignature = acquiredInputs.get(inputKey);
+                if (acquiredSignature !== undefined) {
+                  if (acquiredSignature !== signature)
+                    this.reportBackgroundError(
+                      new Error(
+                        `V2 task input key ${inputKey} was reused incompatibly`,
+                      ),
+                    );
+                  continue;
+                }
+                acquiredInputs.set(inputKey, signature);
+                const request: InputRequestV2 = inputRequest;
+                const projected: ApplicationInputRequest | undefined =
+                  request.method === "sampling/createMessage"
+                    ? { kind: "sampling", params: request.params }
+                    : request.method === "roots/list"
+                      ? {
+                          kind: "roots",
+                          ...(request.params === undefined
+                            ? {}
+                            : { params: request.params }),
+                        }
+                      : request.method === "elicitation/create"
+                        ? { kind: "elicitation", params: request.params }
+                        : undefined;
+                if (projected === undefined) {
+                  this.reportBackgroundError(
+                    new Error(
+                      `Unknown V2 task input method for key ${inputKey}`,
+                    ),
+                  );
+                  continue;
+                }
+                let result: unknown;
+                if (this.options.onInputRequest === undefined) {
+                  if (request.method !== "elicitation/create") continue;
+                  result = { action: "cancel" };
+                } else {
+                  try {
+                    result = await this.options.onInputRequest(projected, {
+                      lifetime: "task-v2",
+                      taskId: task.taskId,
+                      inputKey,
+                      applicationContext:
+                        options.applicationContext as TApplicationContext,
+                      signal: inputSignal,
+                    });
+                  } catch {
+                    if (inputSignal.aborted) return;
+                    if (request.method !== "elicitation/create") continue;
+                    result = { action: "cancel" };
+                  }
+                }
+                try {
+                  const codec =
+                    request.method === "sampling/createMessage"
+                      ? CreateMessageResultV2Codec
+                      : request.method === "roots/list"
+                        ? ListRootsResultV2Codec
+                        : ElicitResultV2Codec;
+                  inputResponses[inputKey] = decodeResult(
+                    codec as RuntimeCodec<InputResponseV2>,
+                    result as JsonValue,
+                  );
+                } catch (error) {
+                  this.reportBackgroundError(
+                    error instanceof Error ? error : new Error(String(error)),
+                  );
+                }
+              }
+              if (inputSignal.aborted) return;
+              if (Object.keys(inputResponses).length === 0) return;
+              const updated = responseResult(
+                await dispatchWithRetry(
+                  this.port,
+                  {
+                    method: "tasks/update",
+                    params: withTaskCapabilityV2({
+                      taskId: task.taskId,
+                      inputResponses,
+                    }),
+                  },
+                  signal,
+                  "mutate",
+                ),
+              );
+              decodeResult(UpdateTaskResultV2Codec, updated);
+            };
             while (!terminalStatus(status)) {
               const delayMs = Math.max(
                 DEFAULT_TASK_POLL_INTERVAL_MS,
@@ -1239,8 +1379,7 @@ class PortTaskEnabledSession<
               current = next;
               status = next.status;
               if (!isClosed()) accept({ generation: "v2", task: next });
-              if (status === "input_required")
-                throw new Error(V2_INPUT_REQUIRED_UNSUPPORTED_MESSAGE);
+              await acquireInputs(next);
             }
             if (isClosed()) throw closedError;
             if (current === undefined) {
@@ -1361,13 +1500,33 @@ class PortTaskEnabledSession<
 
   private trackTaskExecution<TResult>(
     execution: TaskExecution<TResult, TApplicationContext>,
+    v1InputCandidate?: V1TaskInputCandidate<TApplicationContext>,
   ): TaskExecution<TResult, TApplicationContext> {
     const tracked = execution as TaskExecution<unknown, TApplicationContext>;
     this.activeTaskExecutions.add(tracked);
+    if (
+      v1InputCandidate !== undefined &&
+      v1InputCandidate.signal?.aborted !== true
+    ) {
+      this.v1TaskInputCandidates.set(
+        v1InputCandidate.executionId,
+        v1InputCandidate,
+      );
+      v1InputCandidate.signal?.addEventListener(
+        "abort",
+        () => this.v1TaskInputCandidates.delete(v1InputCandidate.executionId),
+        { once: true },
+      );
+    }
     void execution
       .result()
       .catch(() => {})
-      .finally(() => this.activeTaskExecutions.delete(tracked));
+      .finally(() => {
+        execution.endInputLifetime();
+        this.activeTaskExecutions.delete(tracked);
+        if (v1InputCandidate !== undefined)
+          this.v1TaskInputCandidates.delete(v1InputCandidate.executionId);
+      });
     return execution;
   }
 
@@ -1404,8 +1563,6 @@ class PortTaskEnabledSession<
   private async handleServerRequest(
     incoming: IncomingServerRequest,
   ): Promise<JsonRpcResponse> {
-    if (this.options.onInputRequest === undefined)
-      return defaultServerRequestResponse(incoming);
     if (
       incoming.request === null ||
       Array.isArray(incoming.request) ||
@@ -1429,15 +1586,58 @@ class PortTaskEnabledSession<
               }
             : undefined;
     if (request === undefined) return defaultServerRequestResponse(incoming);
-    if (this.ordinaryInputCandidates.size !== 1) {
-      const candidates = [...this.ordinaryInputCandidates.values()].map(
-        (candidate) => ({
-          generation: candidate.generation,
-          toolName: candidate.toolName,
-          executionId: candidate.executionId,
-          applicationContext: candidate.applicationContext,
-        }),
-      );
+    const taskCandidates = [...this.v1TaskInputCandidates.values()];
+    const ordinaryCandidates = [...this.ordinaryInputCandidates.values()];
+    const params = request.params;
+    const meta = params?._meta;
+    const relatedTaskKey = "io.modelcontextprotocol/related-task";
+    let evidence: "absent" | "invalid" | { readonly taskId: string };
+    if (meta === undefined) evidence = "absent";
+    else if (meta === null || Array.isArray(meta) || typeof meta !== "object")
+      evidence = "invalid";
+    else {
+      const relatedTask = (meta as Readonly<Record<string, JsonValue>>)[
+        relatedTaskKey
+      ];
+      if (relatedTask === undefined) evidence = "absent";
+      else if (
+        relatedTask === null ||
+        Array.isArray(relatedTask) ||
+        typeof relatedTask !== "object" ||
+        typeof (relatedTask as Readonly<Record<string, JsonValue>>).taskId !==
+          "string"
+      )
+        evidence = "invalid";
+      else
+        evidence = {
+          taskId: (relatedTask as Readonly<Record<string, JsonValue>>)
+            .taskId as string,
+        };
+    }
+    const allCandidates = [...ordinaryCandidates, ...taskCandidates];
+    const matches =
+      evidence === "absent" || evidence === "invalid"
+        ? allCandidates
+        : taskCandidates.filter(
+            (candidate) => candidate.taskId === evidence.taskId,
+          );
+    const failureReason: InputCorrelationFailureReason | undefined =
+      evidence === "invalid"
+        ? "invalid-evidence"
+        : evidence === "absent" && matches.length === 0
+          ? "missing-evidence"
+          : matches.length === 0
+            ? "zero-matches"
+            : matches.length > 1
+              ? "ambiguous-matches"
+              : undefined;
+    if (failureReason !== undefined) {
+      const candidates = matches.map((candidate) => ({
+        generation: candidate.generation,
+        toolName: candidate.toolName,
+        executionId: candidate.executionId,
+        applicationContext: candidate.applicationContext,
+      }));
       this.reportBackgroundError(
         new InputCorrelationError(
           this.port.taskCapabilities.generation === "none"
@@ -1445,20 +1645,34 @@ class PortTaskEnabledSession<
             : this.port.taskCapabilities.generation,
           request.kind,
           candidates,
-          candidates.length === 0 ? "zero-matches" : "ambiguous-matches",
+          failureReason,
         ),
       );
       return defaultServerRequestResponse(incoming);
     }
-    const candidate = this.ordinaryInputCandidates.values().next()
-      .value as OrdinaryInputCandidate<TApplicationContext>;
+    const candidate = matches[0];
+    if (this.options.onInputRequest === undefined)
+      return defaultServerRequestResponse(incoming);
     try {
-      const result = await this.options.onInputRequest(request, {
-        lifetime: "basic",
-        executionId: candidate.executionId,
-        applicationContext: candidate.applicationContext,
-        ...(candidate.signal === undefined ? {} : { signal: candidate.signal }),
-      });
+      const context: ResolvedInputExchangeContext<TApplicationContext> =
+        candidate.lifetime === "task-v1"
+          ? {
+              lifetime: "task-v1",
+              taskId: candidate.taskId,
+              applicationContext: candidate.applicationContext,
+              ...(candidate.signal === undefined
+                ? {}
+                : { signal: candidate.signal }),
+            }
+          : {
+              lifetime: "basic",
+              executionId: candidate.executionId,
+              applicationContext: candidate.applicationContext,
+              ...(candidate.signal === undefined
+                ? {}
+                : { signal: candidate.signal }),
+            };
+      const result = await this.options.onInputRequest(request, context);
       if (!isJsonValue(result))
         throw new Error("Input handler returned a non-JSON value");
       return { kind: "result", result };
