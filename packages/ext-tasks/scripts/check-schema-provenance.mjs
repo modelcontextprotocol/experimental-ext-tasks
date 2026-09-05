@@ -17,7 +17,9 @@ for (const [path, expected] of artifacts) {
   const bytes = await readFile(new URL(path, import.meta.url));
   const actual = gitBlobId(bytes);
   if (actual !== expected) {
-    throw new Error(`${path} provenance mismatch: expected ${expected}, received ${actual}`);
+    throw new Error(
+      `${path} provenance mismatch: expected ${expected}, received ${actual}`,
+    );
   }
 }
 

@@ -77,13 +77,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "check:exports": "node scripts/check-exports.mjs",
     "check:provenance": "node scripts/check-schema-provenance.mjs",
-    "check": "npm run check:provenance && npm run typecheck && npm run test && npm run build && npm run check:exports",
+    "check": "npm run check:provenance && npm run format:check && npm run typecheck && npm run test && npm run build && npm run check:exports",
     "prepack": "npm run check"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
-    "fast-check": "^4.9.0"
+    "fast-check": "^4.9.0",
+    "prettier": "^3.9.6"
   }
 }

@@ -21,9 +21,11 @@ const jsonValue = fc.letrec((tie) => ({
 
 describe("core runtime contracts", () => {
   it("recognizes exactly JSON-compatible generated values", () => {
-    fc.assert(fc.property(jsonValue, (value) => {
-      expect(isJsonValue(value)).toBe(true);
-    }));
+    fc.assert(
+      fc.property(jsonValue, (value) => {
+        expect(isJsonValue(value)).toBe(true);
+      }),
+    );
     fc.assert(
       fc.property(
         fc.oneof(fc.constant(undefined), fc.bigInt(), fc.constant(Symbol("x"))),
@@ -34,7 +36,9 @@ describe("core runtime contracts", () => {
     );
     expect(isJsonValue(new Date())).toBe(false);
     expect(isJsonValue(new Map())).toBe(false);
-    expect(isJsonValue(Object.assign(Object.create(null), { ok: true }))).toBe(true);
+    expect(isJsonValue(Object.assign(Object.create(null), { ok: true }))).toBe(
+      true,
+    );
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     expect(isJsonValue(cyclic)).toBe(false);
@@ -52,7 +56,10 @@ describe("core runtime contracts", () => {
   });
 
   it("exposes decode failures as Error values with stable paths", () => {
-    const error = new ProtocolDecodeError("expected string", ["task", "taskId"]);
+    const error = new ProtocolDecodeError("expected string", [
+      "task",
+      "taskId",
+    ]);
     expect(error).toBeInstanceOf(Error);
     expect(error.path).toEqual(["task", "taskId"]);
     expect(error.message).toContain("task.taskId");

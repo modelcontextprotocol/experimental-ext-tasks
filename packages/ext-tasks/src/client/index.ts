@@ -31,8 +31,14 @@ import {
 
 export type SessionTaskCapabilities =
   | { readonly generation: "none" }
-  | { readonly generation: "v1"; readonly capabilities: ServerTaskCapabilitiesV1 }
-  | { readonly generation: "v2"; readonly capabilities: TaskExtensionCapabilitiesV2 };
+  | {
+      readonly generation: "v1";
+      readonly capabilities: ServerTaskCapabilitiesV1;
+    }
+  | {
+      readonly generation: "v2";
+      readonly capabilities: TaskExtensionCapabilitiesV2;
+    };
 
 export type JsonRpcResponse =
   | { readonly kind: "result"; readonly result: JsonValue }
@@ -45,8 +51,13 @@ export interface IncomingServerRequest {
 
 export interface ConnectedMcpSessionPort {
   readonly taskCapabilities: SessionTaskCapabilities;
-  dispatch(request: JsonValue, options?: { readonly signal?: AbortSignal }): Promise<JsonRpcResponse>;
-  onServerRequest(handler: (incoming: IncomingServerRequest) => Promise<JsonRpcResponse>): () => void;
+  dispatch(
+    request: JsonValue,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<JsonRpcResponse>;
+  onServerRequest(
+    handler: (incoming: IncomingServerRequest) => Promise<JsonRpcResponse>,
+  ): () => void;
   onNotification(listener: (notification: JsonValue) => void): () => void;
   onInvalidated(listener: (reason: unknown) => void): () => void;
   readonly invalidated: boolean;
@@ -81,16 +92,27 @@ export interface ToolDeclarationProvider {
 }
 
 export type ApplicationInputRequest =
-  | { readonly kind: "elicitation"; readonly params: Readonly<Record<string, JsonValue>> }
-  | { readonly kind: "sampling"; readonly params: Readonly<Record<string, JsonValue>> }
-  | { readonly kind: "roots"; readonly params?: Readonly<Record<string, JsonValue>> };
+  | {
+      readonly kind: "elicitation";
+      readonly params: Readonly<Record<string, JsonValue>>;
+    }
+  | {
+      readonly kind: "sampling";
+      readonly params: Readonly<Record<string, JsonValue>>;
+    }
+  | {
+      readonly kind: "roots";
+      readonly params?: Readonly<Record<string, JsonValue>>;
+    };
 
 export interface ApplicationElicitResult {
   readonly action: "accept" | "decline" | "cancel";
   readonly content?: Readonly<Record<string, JsonValue>>;
 }
 
-export type ApplicationCreateMessageResult = Readonly<Record<string, JsonValue>> & {
+export type ApplicationCreateMessageResult = Readonly<
+  Record<string, JsonValue>
+> & {
   readonly model: string;
   readonly role: "assistant" | "user";
   readonly content: JsonValue;
@@ -101,15 +123,34 @@ export interface ApplicationListRootsResult {
 }
 
 export type ApplicationInputResult<TRequest extends ApplicationInputRequest> =
-  TRequest extends { readonly kind: "elicitation" } ? ApplicationElicitResult :
-  TRequest extends { readonly kind: "sampling" } ? ApplicationCreateMessageResult :
-  TRequest extends { readonly kind: "roots" } ? ApplicationListRootsResult :
-  never;
+  TRequest extends { readonly kind: "elicitation" }
+    ? ApplicationElicitResult
+    : TRequest extends { readonly kind: "sampling" }
+      ? ApplicationCreateMessageResult
+      : TRequest extends { readonly kind: "roots" }
+        ? ApplicationListRootsResult
+        : never;
 
 export type ResolvedInputExchangeContext<TApplicationContext = void> =
-  | { readonly lifetime: "basic"; readonly executionId: string; readonly applicationContext: TApplicationContext; readonly signal?: AbortSignal }
-  | { readonly lifetime: "task-v1"; readonly taskId: string; readonly applicationContext: TApplicationContext; readonly signal?: AbortSignal }
-  | { readonly lifetime: "task-v2"; readonly taskId: string; readonly inputKey: string; readonly applicationContext: TApplicationContext; readonly signal?: AbortSignal };
+  | {
+      readonly lifetime: "basic";
+      readonly executionId: string;
+      readonly applicationContext: TApplicationContext;
+      readonly signal?: AbortSignal;
+    }
+  | {
+      readonly lifetime: "task-v1";
+      readonly taskId: string;
+      readonly applicationContext: TApplicationContext;
+      readonly signal?: AbortSignal;
+    }
+  | {
+      readonly lifetime: "task-v2";
+      readonly taskId: string;
+      readonly inputKey: string;
+      readonly applicationContext: TApplicationContext;
+      readonly signal?: AbortSignal;
+    };
 
 export interface ApplicationInputHandler<TApplicationContext = void> {
   handle<TRequest extends ApplicationInputRequest>(
@@ -143,7 +184,6 @@ export class InputCorrelationError<TApplicationContext = void> extends Error {
   }
 }
 
-
 export interface WithTasksOptions<TApplicationContext = void> {
   readonly tools?: ToolDeclarationProvider;
   readonly onInputRequest?: ApplicationInputHandler<TApplicationContext>["handle"];
@@ -154,8 +194,16 @@ export interface WithTasksOptions<TApplicationContext = void> {
 export type { TaskEligibleMethodV2 } from "../core/v2/index.js";
 
 export type TaskHandle =
-  | { readonly generation: "v1"; readonly taskId: TaskId; readonly originalOperation: TaskEligibleMethodV1 }
-  | { readonly generation: "v2"; readonly taskId: TaskId; readonly originalOperation: TaskEligibleMethodV2 };
+  | {
+      readonly generation: "v1";
+      readonly taskId: TaskId;
+      readonly originalOperation: TaskEligibleMethodV1;
+    }
+  | {
+      readonly generation: "v2";
+      readonly taskId: TaskId;
+      readonly originalOperation: TaskEligibleMethodV2;
+    };
 
 export interface ToolExecutionCommon<TResult, TApplicationContext = void> {
   readonly applicationContext: TApplicationContext;
@@ -167,8 +215,14 @@ export interface ToolExecutionCommon<TResult, TApplicationContext = void> {
 }
 
 export type ToolExecution<TResult, TApplicationContext = void> =
-  | (ToolExecutionCommon<TResult, TApplicationContext> & { readonly kind: "immediate"; readonly handle?: undefined })
-  | (ToolExecutionCommon<TResult, TApplicationContext> & { readonly kind: "task"; readonly handle: TaskHandle });
+  | (ToolExecutionCommon<TResult, TApplicationContext> & {
+      readonly kind: "immediate";
+      readonly handle?: undefined;
+    })
+  | (ToolExecutionCommon<TResult, TApplicationContext> & {
+      readonly kind: "task";
+      readonly handle: TaskHandle;
+    });
 
 export class TaskUpdatesAlreadyAcquiredError extends Error {
   constructor() {
@@ -208,29 +262,41 @@ export interface TaskEnabledSession<TApplicationContext = void> {
 }
 
 export type SerializedTaskReference =
-  | { readonly endpointId: string; readonly generation: "v1"; readonly taskId: TaskId; readonly originalOperation: TaskEligibleMethodV1 }
-  | { readonly endpointId: string; readonly generation: "v2"; readonly taskId: TaskId; readonly originalOperation: TaskEligibleMethodV2 };
-
+  | {
+      readonly endpointId: string;
+      readonly generation: "v1";
+      readonly taskId: TaskId;
+      readonly originalOperation: TaskEligibleMethodV1;
+    }
+  | {
+      readonly endpointId: string;
+      readonly generation: "v2";
+      readonly taskId: TaskId;
+      readonly originalOperation: TaskEligibleMethodV2;
+    };
 
 function defaultResultCodec(
   generation: SessionTaskCapabilities["generation"],
 ): RuntimeCodec<CallToolResultV1 | CallToolResultV2> {
-  return generation === "v2"
-    ? CallToolResultV2Codec
-    : CallToolResultV1Codec;
+  return generation === "v2" ? CallToolResultV2Codec : CallToolResultV1Codec;
 }
 
 function reasonAsError(reason: unknown): Error {
   if (reason instanceof Error) return reason;
-  return new Error(typeof reason === "string" ? reason : "MCP session was invalidated", { cause: reason });
+  return new Error(
+    typeof reason === "string" ? reason : "MCP session was invalidated",
+    { cause: reason },
+  );
 }
 
 function unsupported(feature: string): Error {
   return new Error(`${feature} is not supported`);
 }
 
-class ImmediateExecution<TResult, TApplicationContext>
-implements ToolExecutionCommon<TResult, TApplicationContext> {
+class ImmediateExecution<
+  TResult,
+  TApplicationContext,
+> implements ToolExecutionCommon<TResult, TApplicationContext> {
   readonly kind = "immediate" as const;
   readonly handle = undefined;
   private closed = false;
@@ -240,15 +306,13 @@ implements ToolExecutionCommon<TResult, TApplicationContext> {
     private readonly resultPromise: Promise<TResult>,
   ) {}
 
-  async *updates(_signal?: AbortSignal): AsyncIterable<TaskSnapshot> {
-  }
+  async *updates(_signal?: AbortSignal): AsyncIterable<TaskSnapshot> {}
 
   result(): Promise<TResult> {
     return this.resultPromise;
   }
 
-  async cancel(_signal?: AbortSignal): Promise<void> {
-  }
+  async cancel(_signal?: AbortSignal): Promise<void> {}
 
   async close(): Promise<void> {
     if (this.closed) return;
@@ -285,7 +349,11 @@ class ManagedToolDeclarations implements ToolDeclarationProvider {
       try {
         await this.initialReady;
       } catch (error) {
-        if (this.closed || (error instanceof DOMException && error.name === "AbortError")) throw error;
+        if (
+          this.closed ||
+          (error instanceof DOMException && error.name === "AbortError")
+        )
+          throw error;
         this.initialReady = this.refresh();
         void this.initialReady.catch(() => {});
         await this.initialReady;
@@ -295,7 +363,12 @@ class ManagedToolDeclarations implements ToolDeclarationProvider {
     if (signal === undefined) return waiting;
     let onAbort: (() => void) | undefined;
     const aborted = new Promise<never>((_, reject) => {
-      onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError"));
+      onAbort = () =>
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new DOMException("The operation was aborted", "AbortError"),
+        );
       signal.addEventListener("abort", onAbort, { once: true });
     });
     try {
@@ -313,18 +386,28 @@ class ManagedToolDeclarations implements ToolDeclarationProvider {
 
   onNotification(notification: JsonValue): void {
     if (this.closed) return;
-    if (notification === null || Array.isArray(notification) || typeof notification !== "object") return;
+    if (
+      notification === null ||
+      Array.isArray(notification) ||
+      typeof notification !== "object"
+    )
+      return;
     const record = notification as Readonly<Record<string, JsonValue>>;
     if (record.method !== "notifications/tools/list_changed") return;
     void this.refresh().catch((error: unknown) => {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
-        this.reportError(error instanceof Error ? error : new Error("Tool refresh failed", { cause: error }));
+        this.reportError(
+          error instanceof Error
+            ? error
+            : new Error("Tool refresh failed", { cause: error }),
+        );
       }
     });
   }
 
   private async refresh(): Promise<void> {
-    if (this.closed) throw new DOMException("Tool declarations are closed", "AbortError");
+    if (this.closed)
+      throw new DOMException("Tool declarations are closed", "AbortError");
     const sequence = ++this.refreshSequence;
     this.refreshController?.abort();
     const controller = new AbortController();
@@ -333,41 +416,59 @@ class ManagedToolDeclarations implements ToolDeclarationProvider {
     let cursor: string | undefined;
     do {
       const response = await this.port.dispatch(
-        { method: "tools/list", params: cursor === undefined ? {} : { cursor } },
+        {
+          method: "tools/list",
+          params: cursor === undefined ? {} : { cursor },
+        },
         { signal: controller.signal },
       );
-      if (response.kind === "error") throw new JsonRpcResponseError(response.error);
-      if (response.result === null || Array.isArray(response.result) || typeof response.result !== "object") {
+      if (response.kind === "error")
+        throw new JsonRpcResponseError(response.error);
+      if (
+        response.result === null ||
+        Array.isArray(response.result) ||
+        typeof response.result !== "object"
+      ) {
         throw new Error("tools/list result must be an object");
       }
       const result = response.result as Readonly<Record<string, JsonValue>>;
       const listed = result.tools;
-      if (!Array.isArray(listed)) throw new Error("tools/list result must contain tools");
+      if (!Array.isArray(listed))
+        throw new Error("tools/list result must contain tools");
       for (const value of listed) {
-        const parsed = this.port.taskCapabilities.generation === "v1"
-          ? ToolV1Codec.parse(value)
-          : this.port.taskCapabilities.generation === "v2"
-            ? ToolV2Codec.parse(value)
-            : (() => {
-                const v2 = ToolV2Codec.parse(value);
-                return v2.success ? v2 : ToolV1Codec.parse(value);
-              })();
+        const parsed =
+          this.port.taskCapabilities.generation === "v1"
+            ? ToolV1Codec.parse(value)
+            : this.port.taskCapabilities.generation === "v2"
+              ? ToolV2Codec.parse(value)
+              : (() => {
+                  const v2 = ToolV2Codec.parse(value);
+                  return v2.success ? v2 : ToolV1Codec.parse(value);
+                })();
         if (!parsed.success) throw parsed.error;
         if (decoded.has(parsed.value.name)) {
-          this.reportError(new Error(`Duplicate tool declaration: ${parsed.value.name}`));
+          this.reportError(
+            new Error(`Duplicate tool declaration: ${parsed.value.name}`),
+          );
         }
         decoded.set(parsed.value.name, parsed.value);
       }
-      cursor = typeof result.nextCursor === "string" ? result.nextCursor : undefined;
+      cursor =
+        typeof result.nextCursor === "string" ? result.nextCursor : undefined;
     } while (cursor !== undefined);
     if (sequence === this.refreshSequence) this.tools = decoded;
   }
 }
 
-
-function requestParams(request: Readonly<Record<string, JsonValue>>): Readonly<Record<string, JsonValue>> {
+function requestParams(
+  request: Readonly<Record<string, JsonValue>>,
+): Readonly<Record<string, JsonValue>> {
   if (request.params === undefined) return {};
-  if (request.params === null || Array.isArray(request.params) || typeof request.params !== "object") {
+  if (
+    request.params === null ||
+    Array.isArray(request.params) ||
+    typeof request.params !== "object"
+  ) {
     throw new Error("Input request params must be an object");
   }
   return request.params as Readonly<Record<string, JsonValue>>;
@@ -383,9 +484,14 @@ interface OrdinaryInputCandidate<TApplicationContext> {
 
 let nextExecutionId = 0;
 
-
-function defaultServerRequestResponse(incoming: IncomingServerRequest): JsonRpcResponse {
-  if (incoming.request !== null && !Array.isArray(incoming.request) && typeof incoming.request === "object") {
+function defaultServerRequestResponse(
+  incoming: IncomingServerRequest,
+): JsonRpcResponse {
+  if (
+    incoming.request !== null &&
+    !Array.isArray(incoming.request) &&
+    typeof incoming.request === "object"
+  ) {
     const request = incoming.request as Readonly<Record<string, JsonValue>>;
     if (request.method === "elicitation/create") {
       return { kind: "result", result: { action: "cancel" } };
@@ -396,17 +502,23 @@ function defaultServerRequestResponse(incoming: IncomingServerRequest): JsonRpcR
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted !== true) return;
-  throw signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("The operation was aborted", "AbortError");
 }
 
-
-class PortTaskEnabledSession<TApplicationContext> implements TaskEnabledSession<TApplicationContext> {
+class PortTaskEnabledSession<
+  TApplicationContext,
+> implements TaskEnabledSession<TApplicationContext> {
   private closed = false;
   private invalidationError: Error | undefined;
   private readonly disposeListeners: readonly (() => void)[];
   private readonly declarations: ToolDeclarationProvider;
   private readonly managedDeclarations: ManagedToolDeclarations | undefined;
-  private readonly ordinaryInputCandidates = new Map<string, OrdinaryInputCandidate<TApplicationContext>>();
+  private readonly ordinaryInputCandidates = new Map<
+    string,
+    OrdinaryInputCandidate<TApplicationContext>
+  >();
 
   constructor(
     private readonly port: ConnectedMcpSessionPort,
@@ -419,24 +531,31 @@ class PortTaskEnabledSession<TApplicationContext> implements TaskEnabledSession<
         console.error(sinkError);
       }
     };
-    this.managedDeclarations = options.tools === undefined
-      ? new ManagedToolDeclarations(port, reportError)
-      : undefined;
+    this.managedDeclarations =
+      options.tools === undefined
+        ? new ManagedToolDeclarations(port, reportError)
+        : undefined;
     this.declarations = options.tools ?? this.managedDeclarations!;
     const onSessionAbort = (): void => {
       if (this.invalidationError === undefined) {
-        this.invalidationError = options.signal?.reason instanceof Error
-          ? options.signal.reason
-          : new DOMException("The session was aborted", "AbortError");
+        this.invalidationError =
+          options.signal?.reason instanceof Error
+            ? options.signal.reason
+            : new DOMException("The session was aborted", "AbortError");
       }
       this.managedDeclarations?.close();
     };
     options.signal?.addEventListener("abort", onSessionAbort, { once: true });
     this.disposeListeners = [
-      port.onServerRequest(async (incoming) => this.handleServerRequest(incoming)),
-      port.onNotification((notification) => this.managedDeclarations?.onNotification(notification)),
+      port.onServerRequest(async (incoming) =>
+        this.handleServerRequest(incoming),
+      ),
+      port.onNotification((notification) =>
+        this.managedDeclarations?.onNotification(notification),
+      ),
       port.onInvalidated((reason) => {
-        if (this.invalidationError === undefined) this.invalidationError = reasonAsError(reason);
+        if (this.invalidationError === undefined)
+          this.invalidationError = reasonAsError(reason);
         this.managedDeclarations?.close();
       }),
       () => options.signal?.removeEventListener("abort", onSessionAbort),
@@ -464,22 +583,35 @@ class PortTaskEnabledSession<TApplicationContext> implements TaskEnabledSession<
     await this.managedDeclarations?.ensureReady(options.signal);
     this.assertUsable();
     const declaration = this.declarations.currentTool(name);
-    if (this.port.taskCapabilities.generation === "v2" && declaration !== undefined && "execution" in declaration) {
-      throw new Error("Tool declaration generation does not match the V2 session");
+    if (
+      this.port.taskCapabilities.generation === "v2" &&
+      declaration !== undefined &&
+      "execution" in declaration
+    ) {
+      throw new Error(
+        "Tool declaration generation does not match the V2 session",
+      );
     }
     const requestParams: Record<string, JsonValue> = { name };
     if (params !== undefined) requestParams.arguments = params;
     if (
-      this.port.taskCapabilities.generation === "v1"
-      && declaration !== undefined
-      && "execution" in declaration
-      && shouldCallToolAsTaskV1(this.port.taskCapabilities.capabilities, declaration as ToolV1, options.preferTask)
+      this.port.taskCapabilities.generation === "v1" &&
+      declaration !== undefined &&
+      "execution" in declaration &&
+      shouldCallToolAsTaskV1(
+        this.port.taskCapabilities.capabilities,
+        declaration as ToolV1,
+        options.preferTask,
+      )
     ) {
       throw unsupported("Task execution");
     }
     const executionId = `execution-${++nextExecutionId}`;
     this.ordinaryInputCandidates.set(executionId, {
-      generation: this.port.taskCapabilities.generation === "none" ? "v1" : this.port.taskCapabilities.generation,
+      generation:
+        this.port.taskCapabilities.generation === "none"
+          ? "v1"
+          : this.port.taskCapabilities.generation,
       toolName: name,
       executionId,
       applicationContext: options.applicationContext as TApplicationContext,
@@ -496,13 +628,22 @@ class PortTaskEnabledSession<TApplicationContext> implements TaskEnabledSession<
     }
     this.assertUsable();
     throwIfAborted(options.signal);
-    if (response.kind === "error") throw new JsonRpcResponseError(response.error);
-    if (isTaskResultForGeneration(this.port.taskCapabilities.generation, response.result)) {
+    if (response.kind === "error")
+      throw new JsonRpcResponseError(response.error);
+    if (
+      isTaskResultForGeneration(
+        this.port.taskCapabilities.generation,
+        response.result,
+      )
+    ) {
       throw unsupported("Task-result execution");
     }
 
-    const codec = options.resultCodec
-      ?? defaultResultCodec(this.port.taskCapabilities.generation) as RuntimeCodec<TResult>;
+    const codec =
+      options.resultCodec ??
+      (defaultResultCodec(
+        this.port.taskCapabilities.generation,
+      ) as RuntimeCodec<TResult>);
     const decoded = codec.parse(response.result);
     if (!decoded.success) throw decoded.error;
     const resultPromise = Promise.resolve(decoded.value);
@@ -534,37 +675,57 @@ class PortTaskEnabledSession<TApplicationContext> implements TaskEnabledSession<
     return this.close();
   }
 
-  private async handleServerRequest(incoming: IncomingServerRequest): Promise<JsonRpcResponse> {
-    if (this.options.onInputRequest === undefined) return defaultServerRequestResponse(incoming);
-    if (incoming.request === null || Array.isArray(incoming.request) || typeof incoming.request !== "object") {
+  private async handleServerRequest(
+    incoming: IncomingServerRequest,
+  ): Promise<JsonRpcResponse> {
+    if (this.options.onInputRequest === undefined)
+      return defaultServerRequestResponse(incoming);
+    if (
+      incoming.request === null ||
+      Array.isArray(incoming.request) ||
+      typeof incoming.request !== "object"
+    ) {
       return defaultServerRequestResponse(incoming);
     }
     const wire = incoming.request as Readonly<Record<string, JsonValue>>;
     const method = wire.method;
-    const request: ApplicationInputRequest | undefined = method === "elicitation/create"
-      ? { kind: "elicitation", params: requestParams(wire) }
-      : method === "sampling/createMessage"
-        ? { kind: "sampling", params: requestParams(wire) }
-        : method === "roots/list"
-          ? { kind: "roots", ...(wire.params === undefined ? {} : { params: requestParams(wire) }) }
-          : undefined;
+    const request: ApplicationInputRequest | undefined =
+      method === "elicitation/create"
+        ? { kind: "elicitation", params: requestParams(wire) }
+        : method === "sampling/createMessage"
+          ? { kind: "sampling", params: requestParams(wire) }
+          : method === "roots/list"
+            ? {
+                kind: "roots",
+                ...(wire.params === undefined
+                  ? {}
+                  : { params: requestParams(wire) }),
+              }
+            : undefined;
     if (request === undefined) return defaultServerRequestResponse(incoming);
     if (this.ordinaryInputCandidates.size !== 1) {
-      const candidates = [...this.ordinaryInputCandidates.values()].map((candidate) => ({
-        generation: candidate.generation,
-        toolName: candidate.toolName,
-        executionId: candidate.executionId,
-        applicationContext: candidate.applicationContext,
-      }));
-      this.reportBackgroundError(new InputCorrelationError(
-        this.port.taskCapabilities.generation === "none" ? "v1" : this.port.taskCapabilities.generation,
-        request.kind,
-        candidates,
-        candidates.length === 0 ? "zero-matches" : "ambiguous-matches",
-      ));
+      const candidates = [...this.ordinaryInputCandidates.values()].map(
+        (candidate) => ({
+          generation: candidate.generation,
+          toolName: candidate.toolName,
+          executionId: candidate.executionId,
+          applicationContext: candidate.applicationContext,
+        }),
+      );
+      this.reportBackgroundError(
+        new InputCorrelationError(
+          this.port.taskCapabilities.generation === "none"
+            ? "v1"
+            : this.port.taskCapabilities.generation,
+          request.kind,
+          candidates,
+          candidates.length === 0 ? "zero-matches" : "ambiguous-matches",
+        ),
+      );
       return defaultServerRequestResponse(incoming);
     }
-    const candidate = this.ordinaryInputCandidates.values().next().value as OrdinaryInputCandidate<TApplicationContext>;
+    const candidate = this.ordinaryInputCandidates.values().next()
+      .value as OrdinaryInputCandidate<TApplicationContext>;
     try {
       const result = await this.options.onInputRequest(request, {
         lifetime: "basic",
@@ -572,13 +733,13 @@ class PortTaskEnabledSession<TApplicationContext> implements TaskEnabledSession<
         applicationContext: candidate.applicationContext,
         ...(candidate.signal === undefined ? {} : { signal: candidate.signal }),
       });
-      if (!isJsonValue(result)) throw new Error("Input handler returned a non-JSON value");
+      if (!isJsonValue(result))
+        throw new Error("Input handler returned a non-JSON value");
       return { kind: "result", result };
     } catch {
       return defaultServerRequestResponse(incoming);
     }
   }
-
 
   private reportBackgroundError(error: Error): void {
     try {
@@ -588,7 +749,6 @@ class PortTaskEnabledSession<TApplicationContext> implements TaskEnabledSession<
       console.error(sinkError);
     }
   }
-
 
   private assertUsable(): void {
     if (this.invalidationError !== undefined) throw this.invalidationError;
