@@ -5,7 +5,7 @@ import {
   type ServerTaskCapabilitiesV1,
   type TaskEligibleMethodV1,
   type ToolV1,
-} from "./wire.js";
+} from "./schemas.js";
 /** Checks whether the server advertises task listing by defining its list capability. */
 export function hasTaskListCapabilityV1(
   capabilities: ServerTaskCapabilitiesV1,

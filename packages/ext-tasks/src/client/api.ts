@@ -1,10 +1,10 @@
 import type {
   JsonValue,
-  RuntimeCodec,
   TaskGeneration,
   TaskId,
   TaskSnapshot,
 } from "../core/index.js";
+import type { z } from "zod/v4";
 import type {
   CallToolResultV1,
   TaskEligibleMethodV1,
@@ -201,7 +201,7 @@ export interface TaskEnabledSession<TApplicationContext = void> {
     name: string,
     params?: Readonly<Record<string, JsonValue>>,
     options?: {
-      readonly resultCodec?: RuntimeCodec<TResult>;
+      readonly resultSchema?: z.ZodType<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
       readonly preferTask?: boolean;
@@ -210,7 +210,7 @@ export interface TaskEnabledSession<TApplicationContext = void> {
   resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
     reference: SerializedTaskReference,
     options?: {
-      readonly resultCodec?: RuntimeCodec<TResult>;
+      readonly resultSchema?: z.ZodType<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
     },

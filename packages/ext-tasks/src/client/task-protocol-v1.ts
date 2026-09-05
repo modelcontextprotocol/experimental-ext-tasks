@@ -1,10 +1,10 @@
 /** Generation-specific requester-side V1 task execution. */
 
-import type { RuntimeCodec } from "../core/index.js";
+import type { z } from "zod/v4";
 import {
-  CancelTaskResultV1Codec,
-  GetTaskResultV1Codec,
-  TaskResultV1Codec,
+  CancelTaskResultV1Schema,
+  GetTaskResultV1Schema,
+  TaskResultV1Schema,
   type TaskV1,
 } from "../core/v1/index.js";
 import { TaskCancellationUnsupportedError, type TaskHandle } from "./api.js";
@@ -14,7 +14,7 @@ import {
   terminalStatus,
 } from "./execution.js";
 import {
-  decodeResult,
+  parseResult,
   dispatchWithRetry,
   responseResult,
   type ConnectedMcpSessionPort,
@@ -25,11 +25,11 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
   readonly applicationContext: TApplicationContext;
   readonly handle: TaskHandle & { readonly generation: "v1" };
   readonly initialTask: TaskV1;
-  readonly resultCodec: RuntimeCodec<TResult>;
+  readonly resultSchema: z.ZodType<TResult>;
   readonly port: ConnectedMcpSessionPort;
   readonly lifecycleSignal: AbortSignal;
 }): TaskExecution<TResult, TApplicationContext> {
-  const { applicationContext, handle, initialTask, resultCodec, port } =
+  const { applicationContext, handle, initialTask, resultSchema, port } =
     options;
   return new TaskExecution(
     applicationContext,
@@ -65,8 +65,8 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
               "observe",
             ).then((response) => ({
               generation: "v1" as const,
-              task: decodeResult(
-                GetTaskResultV1Codec,
+              task: parseResult(
+                GetTaskResultV1Schema,
                 responseResult(response),
               ),
             })),
@@ -88,8 +88,8 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
           "observe",
         ),
       );
-      decodeResult(TaskResultV1Codec, taskResult);
-      return decodeResult(resultCodec, taskResult);
+      parseResult(TaskResultV1Schema, taskResult);
+      return parseResult(resultSchema, taskResult);
     },
     async (signal) => {
       const capabilities = port.taskCapabilities;
@@ -98,8 +98,8 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
         capabilities.capabilities.cancel === undefined
       )
         throw new TaskCancellationUnsupportedError();
-      decodeResult(
-        CancelTaskResultV1Codec,
+      parseResult(
+        CancelTaskResultV1Schema,
         responseResult(
           await dispatchWithRetry(
             port,

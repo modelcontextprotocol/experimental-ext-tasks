@@ -1,13 +1,14 @@
 /** Generation-specific requester-side V2 task execution. */
 
-import type { JsonValue, RuntimeCodec } from "../core/index.js";
+import type { JsonValue } from "../core/index.js";
+import type { z } from "zod/v4";
 import {
-  CancelTaskResultV2Codec,
-  CreateMessageResultV2Codec,
-  ElicitResultV2Codec,
-  GetTaskResultV2Codec,
-  ListRootsResultV2Codec,
-  UpdateTaskResultV2Codec,
+  CancelTaskResultV2Schema,
+  CreateMessageResultV2Schema,
+  ElicitResultV2Schema,
+  GetTaskResultV2Schema,
+  ListRootsResultV2Schema,
+  UpdateTaskResultV2Schema,
   withTaskCapabilityV2,
   type DetailedTaskV2,
   type InputRequestV2,
@@ -27,7 +28,7 @@ import {
   terminalStatus,
 } from "./execution.js";
 import {
-  decodeResult,
+  parseResult,
   dispatchWithRetry,
   responseResult,
   type ConnectedMcpSessionPort,
@@ -39,7 +40,7 @@ export function createTaskExecutionV2<TResult, TApplicationContext>(options: {
   readonly handle: TaskHandle & { readonly generation: "v2" };
   readonly initialTask: TaskV2;
   readonly initialDetailedTask?: DetailedTaskV2;
-  readonly resultCodec: RuntimeCodec<TResult>;
+  readonly resultSchema: z.ZodType<TResult>;
   readonly port: ConnectedMcpSessionPort;
   readonly lifecycleSignal: AbortSignal;
   readonly onInputRequest?: ApplicationInputHandler<TApplicationContext>["handle"];
@@ -50,7 +51,7 @@ export function createTaskExecutionV2<TResult, TApplicationContext>(options: {
     handle,
     initialTask,
     initialDetailedTask,
-    resultCodec,
+    resultSchema,
     port,
   } = options;
   return new TaskExecution(
@@ -101,8 +102,8 @@ export function createTaskExecutionV2<TResult, TApplicationContext>(options: {
               "observe",
             ).then((response) => ({
               generation: "v2" as const,
-              task: decodeResult(
-                GetTaskResultV2Codec,
+              task: parseResult(
+                GetTaskResultV2Schema,
                 responseResult(response),
               ),
             })),
@@ -122,8 +123,8 @@ export function createTaskExecutionV2<TResult, TApplicationContext>(options: {
       }
       if (isClosed()) throw closedError;
       if (current === undefined) {
-        current = decodeResult(
-          GetTaskResultV2Codec,
+        current = parseResult(
+          GetTaskResultV2Schema,
           responseResult(
             await dispatchWithRetry(
               port,
@@ -143,11 +144,11 @@ export function createTaskExecutionV2<TResult, TApplicationContext>(options: {
         throw new JsonRpcResponseError(current.error);
       if (current.status !== "completed")
         throw new Error(`Unsupported terminal task status: ${current.status}`);
-      return decodeResult(resultCodec, current.result);
+      return parseResult(resultSchema, current.result);
     },
     async (signal) => {
-      decodeResult(
-        CancelTaskResultV2Codec,
+      parseResult(
+        CancelTaskResultV2Schema,
         responseResult(
           await dispatchWithRetry(
             port,
@@ -230,14 +231,14 @@ async function acquireInputs<TApplicationContext>(
       }
     }
     try {
-      const responseCodec =
+      const responseSchema =
         request.method === "sampling/createMessage"
-          ? CreateMessageResultV2Codec
+          ? CreateMessageResultV2Schema
           : request.method === "roots/list"
-            ? ListRootsResultV2Codec
-            : ElicitResultV2Codec;
-      inputResponses[inputKey] = decodeResult(
-        responseCodec as RuntimeCodec<InputResponseV2>,
+            ? ListRootsResultV2Schema
+            : ElicitResultV2Schema;
+      inputResponses[inputKey] = parseResult(
+        responseSchema as z.ZodType<InputResponseV2>,
         result as JsonValue,
       );
     } catch (error) {
@@ -247,8 +248,8 @@ async function acquireInputs<TApplicationContext>(
     }
   }
   if (inputSignal.aborted || Object.keys(inputResponses).length === 0) return;
-  decodeResult(
-    UpdateTaskResultV2Codec,
+  parseResult(
+    UpdateTaskResultV2Schema,
     responseResult(
       await dispatchWithRetry(
         options.port,

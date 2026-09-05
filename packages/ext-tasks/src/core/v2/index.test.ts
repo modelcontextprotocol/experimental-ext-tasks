@@ -1,28 +1,28 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { ProtocolDecodeError, type JsonValue } from "../index.js";
+import { type JsonValue } from "../index.js";
 
 import * as coreV2 from "./index.js";
 
 import {
-  CallToolResultV2Codec,
-  CancelTaskRequestV2Codec,
-  CancelTaskResultV2Codec,
-  CreateTaskResultV2Codec,
-  DetailedTaskV2Codec,
-  ErrorV2Codec,
-  GetTaskRequestV2Codec,
-  GetTaskResultV2Codec,
-  InputRequestsV2Codec,
-  InputResponsesV2Codec,
-  TaskStatusNotificationParamsV2Codec,
-  TaskStatusNotificationV2Codec,
-  TasksExtensionCapabilityV2Codec,
-  TaskV2Codec,
-  ToolV2Codec,
-  UpdateTaskRequestV2Codec,
-  UpdateTaskResultV2Codec,
+  CallToolResultV2Schema,
+  CancelTaskRequestV2Schema,
+  CancelTaskResultV2Schema,
+  CreateTaskResultV2Schema,
+  DetailedTaskV2Schema,
+  ErrorV2Schema,
+  GetTaskRequestV2Schema,
+  GetTaskResultV2Schema,
+  InputRequestsV2Schema,
+  InputResponsesV2Schema,
+  TaskStatusNotificationParamsV2Schema,
+  TaskStatusNotificationV2Schema,
+  TasksExtensionCapabilityV2Schema,
+  TaskV2Schema,
+  ToolV2Schema,
+  UpdateTaskRequestV2Schema,
+  UpdateTaskResultV2Schema,
   contributeTaskFilterV2,
   hasTaskClientCapabilityV2,
   hasTaskServerCapabilityV2,
@@ -59,7 +59,7 @@ describe("V2 runtime wire contracts", () => {
   it("accepts every valid base Task and rejects missing required fields, invalid integers, and statuses", () => {
     fc.assert(
       fc.property(baseTask, (task) => {
-        expect(TaskV2Codec.parse(asJson(task)).success).toBe(true);
+        expect(TaskV2Schema.safeParse(asJson(task)).success).toBe(true);
       }),
     );
     fc.assert(
@@ -75,7 +75,7 @@ describe("V2 runtime wire contracts", () => {
         (task, key) => {
           const invalid = { ...task };
           delete invalid[key];
-          expect(TaskV2Codec.parse(asJson(invalid)).success).toBe(false);
+          expect(TaskV2Schema.safeParse(asJson(invalid)).success).toBe(false);
         },
       ),
     );
@@ -86,9 +86,9 @@ describe("V2 runtime wire contracts", () => {
           .string()
           .filter((status) => !statuses.includes(status as TaskStatusV2)),
         (task, status) => {
-          expect(TaskV2Codec.parse(asJson({ ...task, status })).success).toBe(
-            false,
-          );
+          expect(
+            TaskV2Schema.safeParse(asJson({ ...task, status })).success,
+          ).toBe(false);
         },
       ),
     );
@@ -99,16 +99,16 @@ describe("V2 runtime wire contracts", () => {
           .double({ noNaN: true, noDefaultInfinity: true })
           .filter((n) => !Number.isInteger(n)),
         (task, ttlMs) => {
-          expect(TaskV2Codec.parse(asJson({ ...task, ttlMs })).success).toBe(
-            false,
-          );
+          expect(
+            TaskV2Schema.safeParse(asJson({ ...task, ttlMs })).success,
+          ).toBe(false);
         },
       ),
     );
   });
 
   it("keeps Task closed while preserving wrapper metadata", () => {
-    const decoded = TaskV2Codec.parse({
+    const decoded = TaskV2Schema.safeParse({
       taskId: "task",
       status: "working",
       createdAt: "created",
@@ -117,9 +117,9 @@ describe("V2 runtime wire contracts", () => {
       vendorHint: 1,
     });
     expect(decoded.success).toBe(true);
-    if (decoded.success) expect("vendorHint" in decoded.value).toBe(false);
+    if (decoded.success) expect("vendorHint" in decoded.data).toBe(false);
 
-    const notification = TaskStatusNotificationParamsV2Codec.parse({
+    const notification = TaskStatusNotificationParamsV2Schema.safeParse({
       taskId: "task",
       status: "working",
       createdAt: "created",
@@ -129,18 +129,18 @@ describe("V2 runtime wire contracts", () => {
     });
     expect(notification.success).toBe(true);
     if (notification.success)
-      expect(notification.value._meta).toEqual({ vendorHint: 1 });
+      expect(notification.data._meta).toEqual({ vendorHint: 1 });
   });
 
   it("enforces status-owned DetailedTask payloads", () => {
     fc.assert(
       fc.property(taskFor("working"), (task) => {
-        expect(DetailedTaskV2Codec.parse(asJson(task)).success).toBe(true);
+        expect(DetailedTaskV2Schema.safeParse(asJson(task)).success).toBe(true);
       }),
     );
     fc.assert(
       fc.property(taskFor("cancelled"), (task) => {
-        expect(DetailedTaskV2Codec.parse(asJson(task)).success).toBe(true);
+        expect(DetailedTaskV2Schema.safeParse(asJson(task)).success).toBe(true);
       }),
     );
     fc.assert(
@@ -152,7 +152,7 @@ describe("V2 runtime wire contracts", () => {
         ),
         (task, inputRequests) => {
           expect(
-            DetailedTaskV2Codec.parse(asJson({ ...task, inputRequests }))
+            DetailedTaskV2Schema.safeParse(asJson({ ...task, inputRequests }))
               .success,
           ).toBe(true);
         },
@@ -164,7 +164,7 @@ describe("V2 runtime wire contracts", () => {
         fc.dictionary(fc.string(), fc.jsonValue()),
         (task, result) => {
           expect(
-            DetailedTaskV2Codec.parse(asJson({ ...task, result })).success,
+            DetailedTaskV2Schema.safeParse(asJson({ ...task, result })).success,
           ).toBe(true);
         },
       ),
@@ -176,7 +176,7 @@ describe("V2 runtime wire contracts", () => {
         fc.string(),
         (task, code, message) => {
           expect(
-            DetailedTaskV2Codec.parse(
+            DetailedTaskV2Schema.safeParse(
               asJson({ ...task, error: { code, message } }),
             ).success,
           ).toBe(true);
@@ -188,7 +188,7 @@ describe("V2 runtime wire contracts", () => {
         fc.constantFrom("input_required", "completed", "failed"),
         (status) => {
           expect(
-            DetailedTaskV2Codec.parse({
+            DetailedTaskV2Schema.safeParse({
               taskId: "id",
               status,
               createdAt: "a",
@@ -219,15 +219,16 @@ describe("V2 runtime wire contracts", () => {
           ),
         ),
         (requests) => {
-          expect(InputRequestsV2Codec.parse(asJson(requests)).success).toBe(
-            true,
-          );
+          expect(
+            InputRequestsV2Schema.safeParse(asJson(requests)).success,
+          ).toBe(true);
         },
       ),
     );
     expect(
-      InputRequestsV2Codec.parse({ key: { method: "unknown", params: {} } })
-        .success,
+      InputRequestsV2Schema.safeParse({
+        key: { method: "unknown", params: {} },
+      }).success,
     ).toBe(false);
     fc.assert(
       fc.property(
@@ -250,13 +251,13 @@ describe("V2 runtime wire contracts", () => {
           ),
         ),
         (responses) => {
-          expect(InputResponsesV2Codec.parse(asJson(responses)).success).toBe(
-            true,
-          );
+          expect(
+            InputResponsesV2Schema.safeParse(asJson(responses)).success,
+          ).toBe(true);
         },
       ),
     );
-    expect(InputResponsesV2Codec.parse({ key: {} }).success).toBe(false);
+    expect(InputResponsesV2Schema.safeParse({ key: {} }).success).toBe(false);
   });
 
   it("decodes complete JSON-RPC errors", () => {
@@ -267,7 +268,7 @@ describe("V2 runtime wire contracts", () => {
         fc.option(fc.jsonValue(), { nil: undefined }),
         (code, message, data) => {
           expect(
-            ErrorV2Codec.parse(
+            ErrorV2Schema.safeParse(
               asJson({
                 code,
                 message,
@@ -278,8 +279,8 @@ describe("V2 runtime wire contracts", () => {
         },
       ),
     );
-    expect(ErrorV2Codec.parse({ code: 1 }).success).toBe(false);
-    expect(ErrorV2Codec.parse({ code: 1.5, message: "bad" }).success).toBe(
+    expect(ErrorV2Schema.safeParse({ code: 1 }).success).toBe(false);
+    expect(ErrorV2Schema.safeParse({ code: 1.5, message: "bad" }).success).toBe(
       false,
     );
   });
@@ -325,17 +326,18 @@ describe("V2 runtime wire contracts", () => {
             ],
             _meta: { trace: "test" },
           });
-          const parsed = ToolV2Codec.parse(tool);
+          const parsed = ToolV2Schema.safeParse(tool);
           expect(parsed.success).toBe(true);
-          if (parsed.success) expect(parsed.value).toEqual(tool);
+          if (parsed.success) expect(parsed.data).toEqual(tool);
         },
       ),
     );
-    expect(ToolV2Codec.parse({ name: "x", inputSchema: {} }).success).toBe(
+    expect(ToolV2Schema.safeParse({ name: "x", inputSchema: {} }).success).toBe(
       false,
     );
     expect(
-      ToolV2Codec.parse({ name: "x", inputSchema: { type: "array" } }).success,
+      ToolV2Schema.safeParse({ name: "x", inputSchema: { type: "array" } })
+        .success,
     ).toBe(false);
     for (const [field, invalid] of [
       ["outputSchema", true],
@@ -344,7 +346,7 @@ describe("V2 runtime wire contracts", () => {
       ["_meta", true],
     ] as const) {
       expect(
-        ToolV2Codec.parse({
+        ToolV2Schema.safeParse({
           name: "x",
           inputSchema: { type: "object" },
           [field]: invalid,
@@ -352,14 +354,14 @@ describe("V2 runtime wire contracts", () => {
       ).toBe(false);
     }
     expect(
-      ToolV2Codec.parse({
+      ToolV2Schema.safeParse({
         name: "x",
         inputSchema: { type: "object" },
         annotations: { readOnlyHint: "yes" },
       }).success,
     ).toBe(false);
     expect(
-      ToolV2Codec.parse({
+      ToolV2Schema.safeParse({
         name: "x",
         inputSchema: { type: "object" },
         icons: [{}],
@@ -403,7 +405,7 @@ describe("V2 runtime wire contracts", () => {
     ];
     fc.assert(
       fc.property(
-        fc.string(),
+        fc.constant("complete" as const),
         fc.jsonValue(),
         fc.dictionary(fc.string(), fc.jsonValue()),
         (resultType, structuredContent, extra) => {
@@ -415,20 +417,28 @@ describe("V2 runtime wire contracts", () => {
             isError: false,
             _meta: { trace: "test" },
           });
-          const parsed = CallToolResultV2Codec.parse(result);
+          const parsed = CallToolResultV2Schema.safeParse(result);
           expect(parsed.success).toBe(true);
-          if (parsed.success) expect(parsed.value).toEqual(result);
+          if (parsed.success) expect(parsed.data).toEqual(result);
         },
       ),
     );
+    expect(CallToolResultV2Schema.parse({ content: [] })).toEqual({
+      resultType: "complete",
+      content: [],
+    });
     expect(
-      CallToolResultV2Codec.parse({ resultType: "complete" }).success,
+      CallToolResultV2Schema.safeParse({ resultType: "complete" }).success,
     ).toBe(false);
     expect(
-      CallToolResultV2Codec.parse({ resultType: 1, content: [] }).success,
+      CallToolResultV2Schema.safeParse({ resultType: 1, content: [] }).success,
     ).toBe(false);
     expect(
-      CallToolResultV2Codec.parse({
+      CallToolResultV2Schema.safeParse({ resultType: "task", content: [] })
+        .success,
+    ).toBe(false);
+    expect(
+      CallToolResultV2Schema.safeParse({
         resultType: "complete",
         content: [{ type: "text" }],
       }).success,
@@ -445,7 +455,7 @@ describe("V2 runtime wire contracts", () => {
           ),
         (type) => {
           expect(
-            CallToolResultV2Codec.parse({
+            CallToolResultV2Schema.safeParse({
               resultType: "complete",
               content: [{ type }],
             }).success,
@@ -454,7 +464,7 @@ describe("V2 runtime wire contracts", () => {
       ),
     );
     expect(
-      CallToolResultV2Codec.parse({
+      CallToolResultV2Schema.safeParse({
         resultType: "complete",
         content: [],
         isError: "no",
@@ -469,7 +479,7 @@ describe("V2 runtime wire contracts", () => {
         fc.string(),
         (id, taskId) => {
           expect(
-            GetTaskRequestV2Codec.parse({
+            GetTaskRequestV2Schema.safeParse({
               jsonrpc: "2.0",
               id,
               method: "tasks/get",
@@ -477,7 +487,7 @@ describe("V2 runtime wire contracts", () => {
             }).success,
           ).toBe(true);
           expect(
-            CancelTaskRequestV2Codec.parse({
+            CancelTaskRequestV2Schema.safeParse({
               jsonrpc: "2.0",
               id,
               method: "tasks/cancel",
@@ -485,7 +495,7 @@ describe("V2 runtime wire contracts", () => {
             }).success,
           ).toBe(true);
           expect(
-            UpdateTaskRequestV2Codec.parse({
+            UpdateTaskRequestV2Schema.safeParse({
               jsonrpc: "2.0",
               id,
               method: "tasks/update",
@@ -495,33 +505,34 @@ describe("V2 runtime wire contracts", () => {
         },
       ),
     );
-    for (const codec of [
-      GetTaskRequestV2Codec,
-      UpdateTaskRequestV2Codec,
-      CancelTaskRequestV2Codec,
+    for (const schema of [
+      GetTaskRequestV2Schema,
+      UpdateTaskRequestV2Schema,
+      CancelTaskRequestV2Schema,
     ]) {
       expect(
-        codec.parse({ jsonrpc: "2.0", id: 1, method: "wrong", params: {} })
+        schema.safeParse({ jsonrpc: "2.0", id: 1, method: "wrong", params: {} })
           .success,
       ).toBe(false);
     }
+    expect(UpdateTaskResultV2Schema.parse({})).toEqual({
+      resultType: "complete",
+    });
+    expect(CancelTaskResultV2Schema.parse({})).toEqual({
+      resultType: "complete",
+    });
     expect(
-      UpdateTaskResultV2Codec.parse({ resultType: "complete" }).success,
-    ).toBe(true);
-    expect(
-      CancelTaskResultV2Codec.parse({ resultType: "complete" }).success,
-    ).toBe(true);
-    expect(UpdateTaskResultV2Codec.parse({}).success).toBe(false);
+      UpdateTaskResultV2Schema.safeParse({ resultType: "task" }).success,
+    ).toBe(false);
     fc.assert(
       fc.property(
         taskFor("completed"),
         fc.dictionary(fc.string(), fc.jsonValue()),
         (task, result) => {
-          expect(
-            GetTaskResultV2Codec.parse(
-              asJson({ ...task, result, resultType: "complete" }),
-            ).success,
-          ).toBe(true);
+          const parsed = GetTaskResultV2Schema.parse(
+            asJson({ ...task, result }),
+          );
+          expect(parsed.resultType).toBe("complete");
         },
       ),
     );
@@ -531,13 +542,13 @@ describe("V2 runtime wire contracts", () => {
     fc.assert(
       fc.property(baseTask, (task) => {
         const result = asJson({ ...task, resultType: "task" });
-        expect(CreateTaskResultV2Codec.parse(result).success).toBe(true);
+        expect(CreateTaskResultV2Schema.safeParse(result).success).toBe(true);
         expect(isToolCallTaskResultV2("tools/call", result)).toBe(true);
         expect(isToolCallTaskResultV2("prompts/get", result)).toBe(false);
       }),
     );
     expect(
-      CreateTaskResultV2Codec.parse({ resultType: "complete" }).success,
+      CreateTaskResultV2Schema.safeParse({ resultType: "complete" }).success,
     ).toBe(false);
   });
 
@@ -545,7 +556,7 @@ describe("V2 runtime wire contracts", () => {
     fc.assert(
       fc.property(taskFor("working"), (task) => {
         expect(
-          TaskStatusNotificationV2Codec.parse(
+          TaskStatusNotificationV2Schema.safeParse(
             asJson({
               jsonrpc: "2.0",
               method: "notifications/tasks",
@@ -556,7 +567,7 @@ describe("V2 runtime wire contracts", () => {
       }),
     );
     expect(
-      TaskStatusNotificationV2Codec.parse({
+      TaskStatusNotificationV2Schema.safeParse({
         jsonrpc: "2.0",
         method: "notifications/wrong",
         params: {},
@@ -572,19 +583,19 @@ describe("V2 runtime wire contracts", () => {
         (task, meta) => {
           const params = asJson({ ...task, _meta: meta });
           const paramsResult =
-            TaskStatusNotificationParamsV2Codec.parse(params);
+            TaskStatusNotificationParamsV2Schema.safeParse(params);
           expect(paramsResult.success).toBe(true);
           if (paramsResult.success)
-            expect(paramsResult.value._meta).toEqual(asJson(meta));
+            expect(paramsResult.data._meta).toEqual(asJson(meta));
 
-          const notificationResult = TaskStatusNotificationV2Codec.parse({
+          const notificationResult = TaskStatusNotificationV2Schema.safeParse({
             jsonrpc: "2.0",
             method: "notifications/tasks",
             params,
           });
           expect(notificationResult.success).toBe(true);
           if (notificationResult.success)
-            expect(notificationResult.value.params._meta).toEqual(asJson(meta));
+            expect(notificationResult.data.params._meta).toEqual(asJson(meta));
         },
       ),
     );
@@ -598,33 +609,115 @@ describe("V2 runtime wire contracts", () => {
         ttlMs: null,
         _meta: meta,
       };
-      const paramsResult = TaskStatusNotificationParamsV2Codec.parse(params);
+      const paramsResult =
+        TaskStatusNotificationParamsV2Schema.safeParse(params);
       expect(paramsResult.success).toBe(false);
       if (!paramsResult.success) {
-        expect(paramsResult.error).toBeInstanceOf(ProtocolDecodeError);
-        expect(paramsResult.error.path).toEqual(["_meta"]);
+        expect(paramsResult.error.issues[0]?.path).toEqual(["_meta"]);
       }
 
-      const notificationResult = TaskStatusNotificationV2Codec.parse({
+      const notificationResult = TaskStatusNotificationV2Schema.safeParse({
         jsonrpc: "2.0",
         method: "notifications/tasks",
         params,
       });
       expect(notificationResult.success).toBe(false);
       if (!notificationResult.success)
-        expect(notificationResult.error.path).toEqual(["params", "_meta"]);
+        expect(notificationResult.error.issues[0]?.path).toEqual([
+          "params",
+          "_meta",
+        ]);
     }
+  });
+
+  it("accepts valid input responses despite colliding extension keys", () => {
+    expect(
+      InputResponsesV2Schema.safeParse({
+        response: {
+          action: "invalid",
+          roots: [],
+          content: {},
+          model: "model",
+          role: "assistant",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      InputResponsesV2Schema.safeParse({
+        response: {
+          roots: "invalid",
+          content: {},
+          model: "model",
+          role: "assistant",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      InputResponsesV2Schema.safeParse({
+        response: {
+          action: "accept",
+          roots: "ignored extension value",
+          content: {},
+          model: 1,
+          role: "invalid",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      InputResponsesV2Schema.safeParse({
+        response: { action: "invalid", roots: "invalid" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("preserves open result output and rejects wrong literals, fractions, and capability extras", () => {
+    const openResult = {
+      resultType: "complete",
+      content: [],
+      structuredContent: { answer: 42 },
+      vendorOutput: { trace: true },
+    };
+    expect(CallToolResultV2Schema.parse(openResult)).toEqual(openResult);
+    expect(UpdateTaskResultV2Schema.parse({ ...openResult })).toEqual(
+      openResult,
+    );
+    expect(CancelTaskResultV2Schema.parse({ ...openResult })).toEqual(
+      openResult,
+    );
+    expect(
+      CreateTaskResultV2Schema.safeParse({
+        taskId: "task",
+        resultType: "complete",
+        status: "working",
+        createdAt: "created",
+        lastUpdatedAt: "updated",
+        ttlMs: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      TaskV2Schema.safeParse({
+        taskId: "task",
+        status: "working",
+        createdAt: "created",
+        lastUpdatedAt: "updated",
+        ttlMs: null,
+        pollIntervalMs: 1.5,
+      }).success,
+    ).toBe(false);
+    expect(
+      TasksExtensionCapabilityV2Schema.safeParse({ extra: true }).success,
+    ).toBe(false);
   });
 
   it("exports only the canonical V2 task result and capability names", () => {
     const capability: TasksExtensionCapabilityV2 = {};
     const result: CallToolResultV2 = { resultType: "complete", content: [] };
 
-    expect(TasksExtensionCapabilityV2Codec.parse(capability)).toEqual({
+    expect(TasksExtensionCapabilityV2Schema.safeParse(capability)).toEqual({
       success: true,
-      value: {},
+      data: {},
     });
-    expect(CallToolResultV2Codec.parse(result).success).toBe(true);
+    expect(CallToolResultV2Schema.safeParse(result).success).toBe(true);
     expect(
       isToolCallTaskResultV2("tools/call", {
         taskId: "task",
@@ -636,10 +729,11 @@ describe("V2 runtime wire contracts", () => {
       }),
     ).toBe(true);
     for (const removed of [
-      "ToolCallResultV2Codec",
+      "ToolCallResultV2Schema",
       "isEligibleTaskResultV2",
-      "TaskExtensionCapabilitiesV2Codec",
+      "TaskExtensionCapabilitiesV2Schema",
       "supportsTasksExtensionV2",
+      ...Object.keys(coreV2).filter((name) => name.endsWith("Codec")),
     ]) {
       expect(removed in coreV2).toBe(false);
     }

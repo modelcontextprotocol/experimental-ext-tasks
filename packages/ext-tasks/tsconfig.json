@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.package.json",
   "compilerOptions": {
+    "isolatedDeclarations": false,
     "outDir": "dist",
     "rootDir": "src",
     "tsBuildInfoFile": "node_modules/.cache/ext-tasks.tsbuildinfo"

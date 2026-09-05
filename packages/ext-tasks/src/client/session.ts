@@ -2,23 +2,23 @@ import { Client } from "@modelcontextprotocol/client";
 import {
   isJsonValue,
   type JsonValue,
-  type RuntimeCodec,
   type TaskId,
   type TaskSnapshot,
 } from "../core/index.js";
+import type { z } from "zod/v4";
 import {
-  CreateTaskResultV1Codec,
-  GetTaskResultV1Codec,
-  TaskStatusNotificationV1Codec,
+  CreateTaskResultV1Schema,
+  GetTaskResultV1Schema,
+  TaskStatusNotificationV1Schema,
   shouldCallToolAsTaskV1,
   type CallToolResultV1,
   type TaskV1,
   type ToolV1,
 } from "../core/v1/index.js";
 import {
-  CreateTaskResultV2Codec,
-  GetTaskResultV2Codec,
-  TaskStatusNotificationV2Codec,
+  CreateTaskResultV2Schema,
+  GetTaskResultV2Schema,
+  TaskStatusNotificationV2Schema,
   isCreateTaskResultV2,
   withTaskCapabilityV2,
   type CallToolResultV2,
@@ -39,7 +39,7 @@ import {
 import {
   ImmediateExecution,
   TaskExecution,
-  defaultResultCodec,
+  defaultResultSchema,
   reasonAsError,
 } from "./execution.js";
 import {
@@ -51,7 +51,7 @@ import {
   type V1TaskInputCandidate,
 } from "./input-routing.js";
 import {
-  decodeResult,
+  parseResult,
   dispatchWithRetry,
   linkAbortSignals,
   responseResult,
@@ -149,7 +149,7 @@ class PortTaskEnabledSession<
     name: string,
     params?: Readonly<Record<string, JsonValue>>,
     options: {
-      readonly resultCodec?: RuntimeCodec<TResult>;
+      readonly resultSchema?: z.ZodType<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
       readonly preferTask?: boolean;
@@ -239,12 +239,12 @@ class PortTaskEnabledSession<
       throw error;
     }
     const wireResult = responseResult(response);
-    const codec =
-      options.resultCodec ??
-      (defaultResultCodec(generation) as RuntimeCodec<TResult>);
+    const schema =
+      options.resultSchema ??
+      (defaultResultSchema(generation) as z.ZodType<TResult>);
 
     if (generation === "v1" && callAsTaskV1) {
-      const created = decodeResult(CreateTaskResultV1Codec, wireResult);
+      const created = parseResult(CreateTaskResultV1Schema, wireResult);
       const handle: TaskHandle & { readonly generation: "v1" } = {
         generation: "v1",
         taskId: created.task.taskId as TaskId,
@@ -254,7 +254,7 @@ class PortTaskEnabledSession<
         applicationContext: options.applicationContext as TApplicationContext,
         handle,
         initialTask: created.task,
-        resultCodec: codec,
+        resultSchema: schema,
         port: this.port,
         lifecycleSignal: this.lifecycleController.signal,
       });
@@ -270,7 +270,7 @@ class PortTaskEnabledSession<
     }
 
     if (generation === "v2" && isCreateTaskResultV2(wireResult)) {
-      const created = decodeResult(CreateTaskResultV2Codec, wireResult);
+      const created = parseResult(CreateTaskResultV2Schema, wireResult);
       const handle: TaskHandle & { readonly generation: "v2" } = {
         generation: "v2",
         taskId: created.taskId as TaskId,
@@ -281,7 +281,7 @@ class PortTaskEnabledSession<
           applicationContext: options.applicationContext as TApplicationContext,
           handle,
           initialTask: created,
-          resultCodec: codec,
+          resultSchema: schema,
           port: this.port,
           lifecycleSignal: this.lifecycleController.signal,
           onInputRequest: this.options.onInputRequest,
@@ -290,7 +290,7 @@ class PortTaskEnabledSession<
       );
     }
 
-    const resultPromise = Promise.resolve(decodeResult(codec, wireResult));
+    const resultPromise = Promise.resolve(parseResult(schema, wireResult));
     return new ImmediateExecution(
       options.applicationContext as TApplicationContext,
       resultPromise,
@@ -300,7 +300,7 @@ class PortTaskEnabledSession<
   async resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
     reference: SerializedTaskReference,
     options: {
-      readonly resultCodec?: RuntimeCodec<TResult>;
+      readonly resultSchema?: z.ZodType<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
     } = {},
@@ -320,9 +320,9 @@ class PortTaskEnabledSession<
     );
     const resumeSignal = resumeLifecycle.signal;
     const executionId = nextExecutionIdentifier();
-    const codec =
-      options.resultCodec ??
-      (defaultResultCodec(reference.generation) as RuntimeCodec<TResult>);
+    const schema =
+      options.resultSchema ??
+      (defaultResultSchema(reference.generation) as z.ZodType<TResult>);
     try {
       throwIfAborted(resumeSignal);
       const response = await dispatchWithRetry(
@@ -341,15 +341,15 @@ class PortTaskEnabledSession<
       throwIfAborted(resumeSignal);
 
       if (reference.generation === "v1") {
-        const task = decodeResult(
-          GetTaskResultV1Codec,
+        const task = parseResult(
+          GetTaskResultV1Schema,
           responseResult(response),
         );
         const execution = createTaskExecutionV1({
           applicationContext: options.applicationContext as TApplicationContext,
           handle: reference,
           initialTask: task,
-          resultCodec: codec,
+          resultSchema: schema,
           port: this.port,
           lifecycleSignal: this.lifecycleController.signal,
         });
@@ -364,14 +364,14 @@ class PortTaskEnabledSession<
         });
       }
 
-      const task = decodeResult(GetTaskResultV2Codec, responseResult(response));
+      const task = parseResult(GetTaskResultV2Schema, responseResult(response));
       return this.trackTaskExecution(
         createTaskExecutionV2({
           applicationContext: options.applicationContext as TApplicationContext,
           handle: reference,
           initialTask: task,
           initialDetailedTask: task,
-          resultCodec: codec,
+          resultSchema: schema,
           port: this.port,
           lifecycleSignal: this.lifecycleController.signal,
           onInputRequest: this.options.onInputRequest,
@@ -392,15 +392,15 @@ class PortTaskEnabledSession<
     let taskId: TaskId | undefined;
     let params: JsonValue | undefined;
     if (generation === "v1" && callAsTaskV1) {
-      const parsed = CreateTaskResultV1Codec.parse(response.result);
+      const parsed = CreateTaskResultV1Schema.safeParse(response.result);
       if (parsed.success) {
-        taskId = parsed.value.task.taskId as TaskId;
+        taskId = parsed.data.task.taskId as TaskId;
         params = { taskId };
       }
     } else if (generation === "v2" && isCreateTaskResultV2(response.result)) {
-      const parsed = CreateTaskResultV2Codec.parse(response.result);
+      const parsed = CreateTaskResultV2Schema.safeParse(response.result);
       if (parsed.success) {
-        taskId = parsed.value.taskId as TaskId;
+        taskId = parsed.data.taskId as TaskId;
         params = withTaskCapabilityV2({ taskId });
       }
     }
@@ -485,9 +485,9 @@ class PortTaskEnabledSession<
     const generation = this.port.taskCapabilities.generation;
     const parsed =
       generation === "v1" && method === "notifications/tasks/status"
-        ? TaskStatusNotificationV1Codec.parse(notification)
+        ? TaskStatusNotificationV1Schema.safeParse(notification)
         : generation === "v2" && method === "notifications/tasks"
-          ? TaskStatusNotificationV2Codec.parse(notification)
+          ? TaskStatusNotificationV2Schema.safeParse(notification)
           : undefined;
     if (parsed === undefined) return;
     if (!parsed.success) {
@@ -496,8 +496,8 @@ class PortTaskEnabledSession<
     }
     const snapshot: TaskSnapshot =
       generation === "v1"
-        ? { generation: "v1", task: parsed.value.params as TaskV1 }
-        : { generation: "v2", task: parsed.value.params as DetailedTaskV2 };
+        ? { generation: "v1", task: parsed.data.params as TaskV1 }
+        : { generation: "v2", task: parsed.data.params as DetailedTaskV2 };
     for (const execution of this.activeTaskExecutions) {
       execution.onNotification(snapshot);
     }

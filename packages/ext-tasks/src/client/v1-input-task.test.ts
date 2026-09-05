@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { expectRecord, type JsonValue } from "../core/index.js";
+import { type JsonValue } from "../core/index.js";
 import {
   type ServerTaskCapabilitiesV1,
   type ToolV1,
@@ -17,6 +17,7 @@ import {
   asJson,
   formatJson,
   asError,
+  expectRecord,
 } from "../../test-support/client/fake-port.js";
 
 describe("V1 input and task behavior", () => {

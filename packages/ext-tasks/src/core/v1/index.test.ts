@@ -1,23 +1,24 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import type { z } from "zod/v4";
 
 import {
-  CallToolRequestV1Codec,
-  CallToolResultV1Codec,
-  CancelTaskRequestV1Codec,
-  CancelTaskResultV1Codec,
-  CreateTaskResultV1Codec,
-  GetTaskRequestV1Codec,
-  GetTaskResultRequestV1Codec,
-  GetTaskResultV1Codec,
-  ListTasksRequestV1Codec,
-  ListTasksResultV1Codec,
-  ServerTaskCapabilitiesV1Codec,
-  TaskResultV1Codec,
-  TaskStatusNotificationV1Codec,
-  TaskStatusV1Codec,
-  TaskV1Codec,
-  ToolV1Codec,
+  CallToolRequestV1Schema,
+  CallToolResultV1Schema,
+  CancelTaskRequestV1Schema,
+  CancelTaskResultV1Schema,
+  CreateTaskResultV1Schema,
+  GetTaskRequestV1Schema,
+  GetTaskResultRequestV1Schema,
+  GetTaskResultV1Schema,
+  ListTasksRequestV1Schema,
+  ListTasksResultV1Schema,
+  ServerTaskCapabilitiesV1Schema,
+  TaskResultV1Schema,
+  TaskStatusNotificationV1Schema,
+  TaskStatusV1Schema,
+  TaskV1Schema,
+  ToolV1Schema,
   callToolAsTaskV1,
   hasTaskCancelCapabilityV1,
   hasTaskListCapabilityV1,
@@ -46,6 +47,10 @@ const taskArb = fc.record({
   pollInterval: fc.option(fc.integer(), { nil: undefined }),
 });
 const idArb = fc.oneof(fc.string(), fc.integer());
+const jsonRecordArb = fc.dictionary(
+  fc.string().filter((key) => key !== "__proto__"),
+  fc.jsonValue(),
+);
 const taskRequestArb = (
   method: "tasks/get" | "tasks/result" | "tasks/cancel",
 ) =>
@@ -56,30 +61,17 @@ const taskRequestArb = (
     params: fc.record({ taskId: fc.string() }),
   });
 
-function expectRoundTrip(
-  codec: { parse(value: unknown): { success: boolean; value?: unknown } },
-  value: unknown,
-): void {
-  const wireValue: unknown = JSON.parse(JSON.stringify(value));
-  const decoded = codec.parse(wireValue);
-  expect(decoded.success).toBe(true);
-  if (decoded.success) expect(decoded.value).toEqual(wireValue);
+type Schema = z.ZodType;
+const asWire = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+function expectRoundTrip(schema: Schema, value: unknown): void {
+  const wire = asWire(value);
+  expect(schema.parse(wire)).toEqual(wire);
 }
 
-describe("V1 runtime wire contracts", () => {
-  it("round-trips Tasks and rejects missing fields, fractions, and unknown statuses", () => {
+describe("V1 Zod wire schemas", () => {
+  it("accepts every Task output and rejects missing fields, null exceptions, fractions, and statuses", () => {
     fc.assert(
-      fc.property(taskArb, (task) => {
-        expectRoundTrip(TaskV1Codec, task);
-      }),
-    );
-    fc.assert(
-      fc.property(
-        fc.string().filter((v) => !statuses.includes(v as TaskStatusV1)),
-        (value) => {
-          expect(TaskStatusV1Codec.parse(value).success).toBe(false);
-        },
-      ),
+      fc.property(taskArb, (task) => expectRoundTrip(TaskV1Schema, task)),
     );
     fc.assert(
       fc.property(
@@ -92,9 +84,23 @@ describe("V1 runtime wire contracts", () => {
           "ttl",
         ),
         (task, key) => {
-          const { [key]: ignored, ...incomplete } = task;
-          void ignored;
-          expect(TaskV1Codec.parse(incomplete as never).success).toBe(false);
+          const invalid = { ...task };
+          delete invalid[key];
+          expect(TaskV1Schema.safeParse(invalid).success).toBe(false);
+        },
+      ),
+    );
+    fc.assert(
+      fc.property(
+        taskArb,
+        fc
+          .string()
+          .filter((value) => !statuses.includes(value as TaskStatusV1)),
+        (task, status) => {
+          expect(TaskStatusV1Schema.safeParse(status).success).toBe(false);
+          expect(TaskV1Schema.safeParse({ ...task, status }).success).toBe(
+            false,
+          );
         },
       ),
     );
@@ -103,83 +109,76 @@ describe("V1 runtime wire contracts", () => {
         taskArb,
         fc
           .double({ noNaN: true, noDefaultInfinity: true })
-          .filter((n) => !Number.isInteger(n)),
+          .filter((value) => !Number.isInteger(value)),
         (task, fraction) => {
-          expect(TaskV1Codec.parse({ ...task, ttl: fraction }).success).toBe(
-            false,
-          );
           expect(
-            TaskV1Codec.parse({ ...task, pollInterval: fraction }).success,
+            TaskV1Schema.safeParse({ ...task, ttl: fraction }).success,
+          ).toBe(false);
+          expect(
+            TaskV1Schema.safeParse({ ...task, pollInterval: fraction }).success,
+          ).toBe(false);
+          expect(
+            CallToolRequestV1Schema.safeParse({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: { name: "x", task: { ttl: fraction } },
+            }).success,
           ).toBe(false);
         },
       ),
     );
+    const [task] = fc.sample(taskArb, 1);
+    expect(TaskV1Schema.safeParse({ ...task, ttl: null }).success).toBe(true);
+    expect(
+      TaskV1Schema.safeParse({ ...task, pollInterval: null }).success,
+    ).toBe(false);
+    expect(
+      CallToolRequestV1Schema.safeParse({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "x", task: { ttl: null } },
+      }).success,
+    ).toBe(false);
   });
 
-  it("round-trips strict task operation requests and rejects discriminator changes", () => {
+  it("enforces exact JSON-RPC literals and required request fields", () => {
     const cases = [
-      [GetTaskRequestV1Codec, taskRequestArb("tasks/get")],
-      [GetTaskResultRequestV1Codec, taskRequestArb("tasks/result")],
-      [CancelTaskRequestV1Codec, taskRequestArb("tasks/cancel")],
+      [GetTaskRequestV1Schema, taskRequestArb("tasks/get")],
+      [GetTaskResultRequestV1Schema, taskRequestArb("tasks/result")],
+      [CancelTaskRequestV1Schema, taskRequestArb("tasks/cancel")],
     ] as const;
-    for (const [codec, arbitrary] of cases)
+    for (const [schema, arbitrary] of cases) {
       fc.assert(
         fc.property(arbitrary, (request) => {
-          expectRoundTrip(codec, request);
-          expect(
-            codec.parse({ ...request, method: "tasks/nope" }).success,
-          ).toBe(false);
-          expect(codec.parse({ ...request, jsonrpc: "1.0" }).success).toBe(
+          expectRoundTrip(schema, request);
+          expect(schema.safeParse({ ...request, jsonrpc: "1.0" }).success).toBe(
             false,
           );
-          const { params: ignored, ...withoutParams } = request;
-          void ignored;
-          expect(codec.parse(withoutParams as never).success).toBe(false);
+          expect(
+            schema.safeParse({ ...request, method: "tasks/nope" }).success,
+          ).toBe(false);
+          for (const key of ["jsonrpc", "id", "method", "params"] as const) {
+            const invalid = { ...request };
+            delete invalid[key];
+            expect(schema.safeParse(invalid).success).toBe(false);
+          }
+          expect(schema.safeParse({ ...request, params: {} }).success).toBe(
+            false,
+          );
         }),
       );
-  });
-
-  it("round-trips get/cancel/list/create results and notifications", () => {
-    fc.assert(
-      fc.property(taskArb, (task) => {
-        expectRoundTrip(GetTaskResultV1Codec, task);
-        expectRoundTrip(CancelTaskResultV1Codec, task);
-        expectRoundTrip(CreateTaskResultV1Codec, { task });
-        expectRoundTrip(TaskStatusNotificationV1Codec, {
-          jsonrpc: "2.0",
-          method: "notifications/tasks/status",
-          params: task,
-        });
-      }),
-    );
-    fc.assert(
-      fc.property(
-        fc.array(taskArb),
-        fc.option(fc.string(), { nil: undefined }),
-        (tasks, nextCursor) => {
-          expectRoundTrip(ListTasksResultV1Codec, {
-            tasks,
-            ...(nextCursor === undefined ? {} : { nextCursor }),
-          });
-        },
-      ),
-    );
-    fc.assert(
-      fc.property(
-        idArb,
-        fc.option(fc.string(), { nil: undefined }),
-        (id, cursor) => {
-          expectRoundTrip(ListTasksRequestV1Codec, {
-            jsonrpc: "2.0",
-            id,
-            method: "tasks/list",
-            ...(cursor === undefined ? {} : { params: { cursor } }),
-          });
-        },
-      ),
-    );
+    }
     expect(
-      TaskStatusNotificationV1Codec.parse({
+      ListTasksRequestV1Schema.safeParse({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tasks/nope",
+      }).success,
+    ).toBe(false);
+    expect(
+      TaskStatusNotificationV1Schema.safeParse({
         jsonrpc: "2.0",
         method: "notifications/tasks/nope",
         params: {},
@@ -187,20 +186,59 @@ describe("V1 runtime wire contracts", () => {
     ).toBe(false);
   });
 
-  it("decodes arbitrary task results and strict tool call content discriminators", () => {
+  it("parses all result and notification schema outputs", () => {
     fc.assert(
-      fc.property(fc.dictionary(fc.string(), fc.jsonValue()), (result) => {
-        expectRoundTrip(TaskResultV1Codec, result);
+      fc.property(taskArb, jsonRecordArb, (task, metadata) => {
+        expectRoundTrip(GetTaskResultV1Schema, { ...task, _meta: metadata });
+        expectRoundTrip(CancelTaskResultV1Schema, { ...task, _meta: metadata });
+        expectRoundTrip(CreateTaskResultV1Schema, { task, _meta: metadata });
+        expectRoundTrip(TaskStatusNotificationV1Schema, {
+          jsonrpc: "2.0",
+          method: "notifications/tasks/status",
+          params: { ...task, _meta: metadata },
+        });
       }),
     );
+    fc.assert(
+      fc.property(
+        fc.array(taskArb),
+        fc.option(fc.string(), { nil: undefined }),
+        (tasks, nextCursor) =>
+          expectRoundTrip(ListTasksResultV1Schema, {
+            tasks,
+            ...(nextCursor === undefined ? {} : { nextCursor }),
+          }),
+      ),
+    );
+    fc.assert(
+      fc.property(
+        idArb,
+        fc.option(fc.string(), { nil: undefined }),
+        (id, cursor) =>
+          expectRoundTrip(ListTasksRequestV1Schema, {
+            jsonrpc: "2.0",
+            id,
+            method: "tasks/list",
+            ...(cursor === undefined ? {} : { params: { cursor } }),
+          }),
+      ),
+    );
+    fc.assert(
+      fc.property(jsonRecordArb, (result) =>
+        expectRoundTrip(TaskResultV1Schema, result),
+      ),
+    );
+  });
+
+  it("validates tool content discriminators and required fields", () => {
     const content = [
-      { type: "text", text: "hello" },
+      { type: "text", text: "hello", extension: true },
       { type: "image", data: "x", mimeType: "image/png" },
       { type: "audio", data: "x", mimeType: "audio/wav" },
       { type: "resource_link", name: "n", uri: "https://x" },
       { type: "resource", resource: { uri: "https://x", text: "body" } },
     ];
-    expectRoundTrip(CallToolResultV1Codec, {
+    expectRoundTrip(CallToolResultV1Schema, {
       content,
       structuredContent: { ok: true },
       isError: false,
@@ -217,27 +255,68 @@ describe("V1 runtime wire contracts", () => {
           ),
         (type) => {
           expect(
-            CallToolResultV1Codec.parse({ content: [{ type }] }).success,
+            CallToolResultV1Schema.safeParse({ content: [{ type }] }).success,
           ).toBe(false);
         },
       ),
     );
     expect(
-      CallToolResultV1Codec.parse({ content: [{ type: "text" }] }).success,
+      CallToolResultV1Schema.safeParse({ content: [{ type: "text" }] }).success,
     ).toBe(false);
+    expect(CallToolResultV1Schema.safeParse({}).success).toBe(false);
   });
 
-  it("decodes tools, task-augmented calls, and nested capabilities strictly", () => {
+  it("preserves the pinned unknown-key projection and open-record policy", () => {
+    const [task] = fc.sample(taskArb, 1);
+    expect(TaskV1Schema.parse({ ...task, extension: true })).toEqual(task);
+    expect(
+      GetTaskRequestV1Schema.parse({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tasks/get",
+        params: { taskId: "t", extension: true },
+        extension: true,
+      }),
+    ).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tasks/get",
+      params: { taskId: "t" },
+    });
+    expect(
+      CallToolResultV1Schema.parse({
+        content: [{ type: "text", text: "x", extension: true }],
+        extension: { ok: true },
+      }),
+    ).toEqual({
+      content: [{ type: "text", text: "x", extension: true }],
+      extension: { ok: true },
+    });
+    expect(
+      ToolV1Schema.parse({
+        name: "x",
+        inputSchema: { type: "object", extension: true },
+        execution: { taskSupport: "optional", extension: true },
+        extension: true,
+      }),
+    ).toEqual({
+      name: "x",
+      inputSchema: { type: "object", extension: true },
+      execution: { taskSupport: "optional" },
+    });
+  });
+
+  it("parses tools, task calls, and nested capabilities", () => {
     fc.assert(
       fc.property(
         fc.string(),
         fc.option(fc.constantFrom("forbidden", "optional", "required"), {
           nil: undefined,
         }),
-        fc.dictionary(fc.string(), fc.jsonValue()),
-        fc.array(fc.dictionary(fc.string(), fc.jsonValue())),
-        (name, taskSupport, metadata, icons) => {
-          expectRoundTrip(ToolV1Codec, {
+        jsonRecordArb,
+        fc.array(jsonRecordArb),
+        (name, taskSupport, metadata, icons) =>
+          expectRoundTrip(ToolV1Schema, {
             name,
             title: "title",
             description: "description",
@@ -249,77 +328,42 @@ describe("V1 runtime wire contracts", () => {
             annotations: metadata,
             icons,
             _meta: metadata,
-          });
-        },
+          }),
       ),
     );
-    expect(ToolV1Codec.parse({ name: "x", inputSchema: {} }).success).toBe(
+    expect(ToolV1Schema.safeParse({ name: "x", inputSchema: {} }).success).toBe(
       false,
     );
     expect(
-      ToolV1Codec.parse({
+      ToolV1Schema.safeParse({
         name: "x",
         inputSchema: { type: "object" },
         execution: { taskSupport: "sometimes" },
       }).success,
     ).toBe(false);
-    for (const [field, invalid] of [
-      ["outputSchema", true],
-      ["annotations", true],
-      ["icons", true],
-      ["_meta", true],
-    ] as const) {
-      expect(
-        ToolV1Codec.parse({
-          name: "x",
-          inputSchema: { type: "object" },
-          [field]: invalid,
-        }).success,
-      ).toBe(false);
-    }
-    expect(
-      ToolV1Codec.parse({
-        name: "x",
-        inputSchema: { type: "object" },
-        icons: [true],
-      }).success,
-    ).toBe(false);
     fc.assert(
-      fc.property(
-        idArb,
-        fc.string(),
-        fc.dictionary(fc.string(), fc.jsonValue()),
-        (id, name, args) => {
-          expectRoundTrip(CallToolRequestV1Codec, {
-            jsonrpc: "2.0",
-            id,
-            method: "tools/call",
-            params: { name, arguments: args, task: {} },
-          });
-        },
+      fc.property(idArb, fc.string(), jsonRecordArb, (id, name, args) =>
+        expectRoundTrip(CallToolRequestV1Schema, {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args, task: {} },
+        }),
       ),
     );
-    expect(
-      CallToolRequestV1Codec.parse({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/nope",
-        params: { name: "x" },
-      }).success,
-    ).toBe(false);
-    expectRoundTrip(ServerTaskCapabilitiesV1Codec, {
+    expectRoundTrip(ServerTaskCapabilitiesV1Schema, {
       list: {},
       cancel: {},
       requests: { tools: { call: {} } },
     });
     expect(
-      ServerTaskCapabilitiesV1Codec.parse({
+      ServerTaskCapabilitiesV1Schema.safeParse({
         requests: { tools: { call: true } },
       }).success,
     ).toBe(false);
   });
 
-  it("follows every capability-first negotiation row and narrow guard", () => {
+  it("follows every capability-first negotiation row", () => {
     const support = fc.option(
       fc.constantFrom("forbidden", "optional", "required"),
       { nil: undefined },

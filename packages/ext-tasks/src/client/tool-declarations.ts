@@ -1,9 +1,13 @@
-import { isJsonArray, type JsonValue } from "../core/index.js";
-import { ToolV1Codec, type ToolV1 } from "../core/v1/index.js";
-import { ToolV2Codec, type ToolV2 } from "../core/v2/index.js";
+import type { JsonValue } from "../core/index.js";
+import { ToolV1Schema, type ToolV1 } from "../core/v1/index.js";
+import { ToolV2Schema, type ToolV2 } from "../core/v2/index.js";
+import type { z } from "zod/v4";
 import { JsonRpcResponseError, type ToolDeclarationProvider } from "./api.js";
 import type { ConnectedMcpSessionPort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
+
+const ToolV1Parser = ToolV1Schema as unknown as z.ZodType<unknown>;
+const ToolV2Parser = ToolV2Schema as unknown as z.ZodType<unknown>;
 
 export class ManagedToolDeclarations implements ToolDeclarationProvider {
   private tools = new Map<string, ToolV1 | ToolV2>();
@@ -114,25 +118,31 @@ export class ManagedToolDeclarations implements ToolDeclarationProvider {
       }
       const result = response.result as Readonly<Record<string, JsonValue>>;
       const listed = result.tools;
-      if (!isJsonArray(listed))
+      if (!Array.isArray(listed))
         throw new Error("tools/list result must contain tools");
+      const generation = (
+        this.port.taskCapabilities as {
+          readonly generation: "none" | "v1" | "v2";
+        }
+      ).generation;
       for (const value of listed) {
         const parsed =
-          this.port.taskCapabilities.generation === "v1"
-            ? ToolV1Codec.parse(value)
-            : this.port.taskCapabilities.generation === "v2"
-              ? ToolV2Codec.parse(value)
+          generation === "v1"
+            ? ToolV1Parser.safeParse(value)
+            : generation === "v2"
+              ? ToolV2Parser.safeParse(value)
               : (() => {
-                  const v2 = ToolV2Codec.parse(value);
-                  return v2.success ? v2 : ToolV1Codec.parse(value);
+                  const v2 = ToolV2Parser.safeParse(value);
+                  return v2.success ? v2 : ToolV1Parser.safeParse(value);
                 })();
         if (!parsed.success) throw parsed.error;
-        if (decoded.has(parsed.value.name)) {
+        const tool = parsed.data as ToolV1 | ToolV2;
+        if (decoded.has(tool.name)) {
           this.reportError(
-            new Error(`Duplicate tool declaration: ${parsed.value.name}`),
+            new Error(`Duplicate tool declaration: ${tool.name}`),
           );
         }
-        decoded.set(parsed.value.name, parsed.value);
+        decoded.set(tool.name, tool);
       }
       cursor =
         typeof result.nextCursor === "string" ? result.nextCursor : undefined;

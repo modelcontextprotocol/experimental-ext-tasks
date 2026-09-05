@@ -1,11 +1,12 @@
-import type { RuntimeCodec, TaskSnapshot } from "../core/index.js";
+import type { TaskSnapshot } from "../core/index.js";
+import type { z } from "zod/v4";
 import {
-  CallToolResultV1Codec,
+  CallToolResultV1Schema,
   type CallToolResultV1,
   type TaskV1,
 } from "../core/v1/index.js";
 import {
-  CallToolResultV2Codec,
+  CallToolResultV2Schema,
   type CallToolResultV2,
 } from "../core/v2/index.js";
 import {
@@ -19,11 +20,11 @@ import type { SessionTaskCapabilities } from "./port.js";
 import { linkAbortSignals, withAbort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
 
-/** Selects the default tool-result codec for the negotiated task generation. */
-export function defaultResultCodec(
+/** Selects the default tool-result schema for the negotiated task generation. */
+export function defaultResultSchema(
   generation: SessionTaskCapabilities["generation"],
-): RuntimeCodec<CallToolResultV1 | CallToolResultV2> {
-  return generation === "v2" ? CallToolResultV2Codec : CallToolResultV1Codec;
+): z.ZodType<CallToolResultV1 | CallToolResultV2> {
+  return generation === "v2" ? CallToolResultV2Schema : CallToolResultV1Schema;
 }
 
 /** Normalizes an invalidation or abort reason to an Error instance. */

@@ -1,6 +1,5 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { expectRecord } from "../core/index.js";
 import {
   DispatchError,
   JsonRpcResponseError,
@@ -14,6 +13,7 @@ import {
   asJson,
   formatJson,
   asError,
+  expectRecord,
 } from "../../test-support/client/fake-port.js";
 
 describe("task lifecycle and races", () => {

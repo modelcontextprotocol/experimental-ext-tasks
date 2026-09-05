@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { expectRecord } from "../core/index.js";
 import { type ToolV1 } from "../core/v1/index.js";
 import { DispatchError, withTasks, type JsonRpcResponse } from "./index.js";
 import {
   FakePort,
   asJson,
   formatJson,
+  expectRecord,
 } from "../../test-support/client/fake-port.js";
 
 describe("declarations and capabilities", () => {

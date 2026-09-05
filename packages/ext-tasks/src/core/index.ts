@@ -1,16 +1,6 @@
+import * as z from "zod/v4";
 import type { TaskV1 } from "./v1/index.js";
 import type { DetailedTaskV2, TaskV2 } from "./v2/index.js";
-import { ProtocolDecodeError } from "./internal/codec.js";
-export {
-  ProtocolDecodeError,
-  createRuntimeCodec,
-  expectEnum,
-  expectNumber,
-  expectRecord,
-  expectString,
-  isJsonArray,
-  type DecodePath,
-} from "./internal/codec.js";
 
 export type TaskId = string & { readonly __taskId: unique symbol };
 export type TaskGeneration = "v1" | "v2";
@@ -22,14 +12,6 @@ export type JsonValue =
   | string
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
-
-export interface RuntimeCodec<T> {
-  parse(
-    value: unknown,
-  ):
-    | { readonly success: true; readonly value: T }
-    | { readonly success: false; readonly error: ProtocolDecodeError };
-}
 
 export type TaskSnapshot =
   | { readonly generation: "v1"; readonly task: TaskV1 }
@@ -73,3 +55,9 @@ export function isJsonValue(value: unknown): value is JsonValue {
   };
   return visit(value);
 }
+
+/** Validates the package's recursive JSON data model. */
+export const JsonValueSchema: z.ZodType<JsonValue> = z.custom<JsonValue>(
+  isJsonValue,
+  "Expected a JSON value",
+);

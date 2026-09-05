@@ -19,35 +19,33 @@ const manifest = JSON.parse(
 const packageName = manifest.name;
 const publicSubpaths = ["core", "core/v1", "core/v2", "client"];
 const expectedRuntimeExports = {
-  core: [
-    "ProtocolDecodeError",
-    "createRuntimeCodec",
-    "expectEnum",
-    "expectNumber",
-    "expectRecord",
-    "expectString",
-    "isJsonArray",
-    "isJsonValue",
-    "taskId",
-  ],
+  core: ["JsonValueSchema", "isJsonValue", "taskId"],
   "core/v1": [
-    "CallToolRequestV1Codec",
-    "CallToolResultV1Codec",
-    "CancelTaskRequestV1Codec",
-    "CancelTaskResultV1Codec",
-    "CreateTaskResultV1Codec",
-    "GetTaskRequestV1Codec",
-    "GetTaskResultRequestV1Codec",
-    "GetTaskResultV1Codec",
-    "ListTasksRequestV1Codec",
-    "ListTasksResultV1Codec",
-    "ServerTaskCapabilitiesV1Codec",
-    "TaskResultV1Codec",
-    "TaskStatusNotificationV1Codec",
-    "TaskStatusV1Codec",
+    "CallToolAsTaskRequestV1Schema",
+    "CallToolRequestV1Schema",
+    "CallToolResultV1Schema",
+    "CancelTaskRequestV1Schema",
+    "CancelTaskResultV1Schema",
+    "ContentBlockV1Schema",
+    "CreateTaskResultV1Schema",
+    "GetTaskRequestV1Schema",
+    "GetTaskResultRequestV1Schema",
+    "GetTaskResultV1Schema",
+    "JsonRpcRequestIdV1Schema",
+    "ListTasksRequestV1Schema",
+    "ListTasksResultV1Schema",
+    "ServerCapabilitiesV1Schema",
+    "ServerTaskCapabilitiesV1Schema",
+    "TaskEligibleMethodV1Schema",
+    "TaskMetadataV1Schema",
+    "TaskResultV1Schema",
+    "TaskStatusNotificationV1Schema",
+    "TaskStatusV1Schema",
     "TaskStatusesV1",
-    "TaskV1Codec",
-    "ToolV1Codec",
+    "TaskSupportV1Schema",
+    "TaskV1Schema",
+    "ToolExecutionV1Schema",
+    "ToolV1Schema",
     "callToolAsTaskV1",
     "hasTaskCancelCapabilityV1",
     "hasTaskListCapabilityV1",
@@ -57,39 +55,45 @@ const expectedRuntimeExports = {
   ],
   "core/v2": [
     "CLIENT_CAPABILITIES_META_KEY_V2",
-    "CallToolResultV2Codec",
-    "CancelTaskRequestV2Codec",
-    "CancelTaskResultV2Codec",
-    "CancelledTaskV2Codec",
-    "CompletedTaskV2Codec",
-    "CreateMessageRequestV2Codec",
-    "CreateMessageResultV2Codec",
-    "CreateTaskResultV2Codec",
-    "DetailedTaskV2Codec",
-    "ElicitRequestV2Codec",
-    "ElicitResultV2Codec",
-    "ErrorV2Codec",
-    "FailedTaskV2Codec",
-    "GetTaskRequestV2Codec",
-    "GetTaskResultV2Codec",
-    "InputRequestV2Codec",
-    "InputRequestsV2Codec",
-    "InputRequiredTaskV2Codec",
-    "InputResponseV2Codec",
-    "InputResponsesV2Codec",
-    "ListRootsRequestV2Codec",
-    "ListRootsResultV2Codec",
+    "CallToolResultV2Schema",
+    "CancelTaskRequestV2Schema",
+    "CancelTaskResultV2Schema",
+    "CancelledTaskV2Schema",
+    "ClientTaskCapabilityEnvelopeV2Schema",
+    "CompletedTaskV2Schema",
+    "ContentBlockV2Schema",
+    "CreateMessageRequestV2Schema",
+    "CreateMessageResultV2Schema",
+    "CreateTaskResultV2Schema",
+    "DetailedTaskV2Schema",
+    "ElicitRequestV2Schema",
+    "ElicitResultV2Schema",
+    "ErrorV2Schema",
+    "FailedTaskV2Schema",
+    "GetTaskRequestV2Schema",
+    "GetTaskResultV2Schema",
+    "InputRequestV2Schema",
+    "InputRequestsV2Schema",
+    "InputRequiredTaskV2Schema",
+    "InputResponseV2Schema",
+    "InputResponsesV2Schema",
+    "ListRootsRequestV2Schema",
+    "ListRootsResultV2Schema",
+    "RequestIdV2Schema",
+    "ServerTaskCapabilityEnvelopeV2Schema",
     "TASKS_EXTENSION_ID_V2",
-    "TaskStatusNotificationParamsV2Codec",
-    "TaskStatusNotificationV2Codec",
-    "TaskSubscriptionAcknowledgedNotificationsV2Codec",
-    "TaskSubscriptionNotificationsV2Codec",
-    "TaskV2Codec",
-    "TasksExtensionCapabilityV2Codec",
-    "ToolV2Codec",
-    "UpdateTaskRequestV2Codec",
-    "UpdateTaskResultV2Codec",
-    "WorkingTaskV2Codec",
+    "TaskEligibleMethodV2Schema",
+    "TaskStatusNotificationParamsV2Schema",
+    "TaskStatusNotificationV2Schema",
+    "TaskStatusV2Schema",
+    "TaskSubscriptionAcknowledgedNotificationsV2Schema",
+    "TaskSubscriptionNotificationsV2Schema",
+    "TaskV2Schema",
+    "TasksExtensionCapabilityV2Schema",
+    "ToolV2Schema",
+    "UpdateTaskRequestV2Schema",
+    "UpdateTaskResultV2Schema",
+    "WorkingTaskV2Schema",
     "contributeTaskFilterV2",
     "hasTaskClientCapabilityV2",
     "hasTaskServerCapabilityV2",
@@ -115,6 +119,69 @@ const expectedRuntimeExports = {
     "withTasks",
   ],
 };
+const removedCoreNames = [
+  "DecodePath",
+  "ProtocolDecodeError",
+  "RuntimeCodec",
+  "createRuntimeCodec",
+  "expectEnum",
+  "expectNumber",
+  "expectRecord",
+  "expectString",
+  "isJsonArray",
+];
+const removedV1CodecNames = [
+  "CallToolRequestV1Codec",
+  "CallToolResultV1Codec",
+  "CancelTaskRequestV1Codec",
+  "CancelTaskResultV1Codec",
+  "CreateTaskResultV1Codec",
+  "GetTaskRequestV1Codec",
+  "GetTaskResultRequestV1Codec",
+  "GetTaskResultV1Codec",
+  "ListTasksRequestV1Codec",
+  "ListTasksResultV1Codec",
+  "ServerTaskCapabilitiesV1Codec",
+  "TaskResultV1Codec",
+  "TaskStatusNotificationV1Codec",
+  "TaskStatusV1Codec",
+  "TaskV1Codec",
+  "ToolV1Codec",
+];
+const removedV2CodecNames = [
+  "CallToolResultV2Codec",
+  "CancelTaskRequestV2Codec",
+  "CancelTaskResultV2Codec",
+  "CancelledTaskV2Codec",
+  "CompletedTaskV2Codec",
+  "CreateMessageRequestV2Codec",
+  "CreateMessageResultV2Codec",
+  "CreateTaskResultV2Codec",
+  "DetailedTaskV2Codec",
+  "ElicitRequestV2Codec",
+  "ElicitResultV2Codec",
+  "ErrorV2Codec",
+  "FailedTaskV2Codec",
+  "GetTaskRequestV2Codec",
+  "GetTaskResultV2Codec",
+  "InputRequestV2Codec",
+  "InputRequestsV2Codec",
+  "InputRequiredTaskV2Codec",
+  "InputResponseV2Codec",
+  "InputResponsesV2Codec",
+  "ListRootsRequestV2Codec",
+  "ListRootsResultV2Codec",
+  "TaskStatusNotificationParamsV2Codec",
+  "TaskStatusNotificationV2Codec",
+  "TaskSubscriptionAcknowledgedNotificationsV2Codec",
+  "TaskSubscriptionNotificationsV2Codec",
+  "TaskV2Codec",
+  "TasksExtensionCapabilityV2Codec",
+  "ToolV2Codec",
+  "UpdateTaskRequestV2Codec",
+  "UpdateTaskResultV2Codec",
+  "WorkingTaskV2Codec",
+];
 const removedPublicAliasesV2 = [
   "EligibleTaskResultV2",
   "TaskExtensionCapabilitiesV2",
@@ -131,7 +198,6 @@ const removedRuntimeAliasesV2 = [
   "supportsTasksExtensionV2",
 ];
 const unbarreledInternalTypesV2 = [
-  "ContentBlockV2",
   "IconV2",
   "JsonRpcRequestV2",
   "OpenObjectV2",
@@ -171,6 +237,11 @@ async function checkBuiltContract() {
     sorted(Object.keys(manifest.exports ?? {})),
     sorted(expectedSubpaths),
     "exports must contain exactly the public subpaths and no root export",
+  );
+  assert.equal(
+    typeof manifest.dependencies?.zod,
+    "string",
+    "zod must be a runtime dependency",
   );
 
   const typeMappings = manifest.typesVersions?.["*"] ?? {};
@@ -290,6 +361,9 @@ async function checkPackedContract() {
       ],
       { cwd: consumerDirectory },
     );
+    await access(
+      join(consumerDirectory, "node_modules", "zod", "package.json"),
+    );
 
     const positiveImports = publicSubpaths
       .map(
@@ -297,10 +371,18 @@ async function checkPackedContract() {
           `import * as ${subpath.replace(/\W/gu, "_")} from "${packageName}/${subpath}";`,
       )
       .join("\n");
-    await writeFile(
-      join(consumerDirectory, "positive.ts"),
-      `${positiveImports}\nvoid 0;\n`,
-    );
+    const positiveSource = `${positiveImports}
+import { withTasks, type ConnectedMcpSessionPort } from "${packageName}/client";
+import * as z from "zod/v4";
+declare const port: ConnectedMcpSessionPort;
+const session = withTasks(port);
+const execution = await session.callTool("example", undefined, {
+  resultSchema: z.object({ value: z.string() }).transform(({ value }) => value.length),
+});
+const inferred: number = await execution.result();
+void inferred;
+`;
+    await writeFile(join(consumerDirectory, "positive.ts"), positiveSource);
     const baseCompilerOptions = {
       target: "ES2022",
       module: "NodeNext",
@@ -338,6 +420,24 @@ async function checkPackedContract() {
         "test-support",
         `import "${packageName}/test-support/client/fake-port";`,
       ],
+      [
+        "removed-result-codec-option",
+        `import { withTasks, type ConnectedMcpSessionPort } from "${packageName}/client";
+declare const port: ConnectedMcpSessionPort;
+void withTasks(port).callTool("example", undefined, { resultCodec: {} });`,
+      ],
+      ...removedCoreNames.map((name) => [
+        `removed-core-${name}`,
+        `import { ${name} } from "${packageName}/core";`,
+      ]),
+      ...removedV1CodecNames.map((name) => [
+        `removed-v1-${name}`,
+        `import { ${name} } from "${packageName}/core/v1";`,
+      ]),
+      ...removedV2CodecNames.map((name) => [
+        `removed-v2-codec-${name}`,
+        `import { ${name} } from "${packageName}/core/v2";`,
+      ]),
       ...unavailableV2Names.map((alias) => [
         `removed-v2-${alias}`,
         `import { ${alias} } from "${packageName}/core/v2";`,

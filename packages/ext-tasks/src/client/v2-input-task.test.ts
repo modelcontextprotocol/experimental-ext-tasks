@@ -1,12 +1,12 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { expectRecord } from "../core/index.js";
 import { withTasks } from "./index.js";
 import {
   FakePort,
   asJson,
   formatJson,
   asError,
+  expectRecord,
 } from "../../test-support/client/fake-port.js";
 
 describe("V2 input and task behavior", () => {
@@ -40,7 +40,6 @@ describe("V2 input and task behavior", () => {
             lastUpdatedAt: "b",
             ttlMs: null,
             result: {
-              resultType: "complete",
               content: [{ type: "text", text: "done" }],
             },
           }),
@@ -140,7 +139,7 @@ describe("V2 input and task behavior", () => {
                   createdAt: "a",
                   lastUpdatedAt: "c",
                   ttlMs: null,
-                  result: { resultType: "complete", content: [] },
+                  result: { content: [] },
                 }),
               };
             }
@@ -261,7 +260,7 @@ describe("V2 input and task behavior", () => {
             createdAt: "a",
             lastUpdatedAt: "z",
             ttlMs: null,
-            result: { resultType: "complete", content: [] },
+            result: { content: [] },
           }),
         };
       }
@@ -338,7 +337,7 @@ describe("V2 input and task behavior", () => {
                   createdAt: "a",
                   lastUpdatedAt: "c",
                   ttlMs: null,
-                  result: { resultType: "complete", content: [] },
+                  result: { content: [] },
                 },
           ),
         };
@@ -439,7 +438,7 @@ describe("V2 input and task behavior", () => {
           createdAt: "a",
           lastUpdatedAt: "c",
           ttlMs: null,
-          result: { resultType: "complete", content: [] },
+          result: { content: [] },
         },
       }),
     );
@@ -495,7 +494,7 @@ describe("V2 input and task behavior", () => {
                   status === "completed"
                     ? {
                         ...terminal,
-                        result: { resultType: "complete", content: [] },
+                        result: { content: [] },
                       }
                     : status === "failed"
                       ? {

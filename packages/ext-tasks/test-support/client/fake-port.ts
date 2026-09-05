@@ -1,4 +1,5 @@
 import { type JsonValue } from "../../src/core/index.js";
+import { z } from "zod/v4";
 import {
   type ConnectedMcpSessionPort,
   type IncomingServerRequest,
@@ -8,6 +9,11 @@ import {
 
 export const asJson = (value: unknown): JsonValue =>
   JSON.parse(JSON.stringify(value)) as JsonValue;
+
+const JsonRecordSchema = z.record(z.string(), z.unknown());
+
+export const expectRecord = (value: unknown): Record<string, unknown> =>
+  JsonRecordSchema.parse(value);
 
 export const formatJson = (value: unknown): string =>
   JSON.stringify(value) ?? "undefined";

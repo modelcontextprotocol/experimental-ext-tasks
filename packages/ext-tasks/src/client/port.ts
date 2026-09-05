@@ -1,4 +1,5 @@
-import type { JsonValue, RuntimeCodec } from "../core/index.js";
+import type { JsonValue } from "../core/index.js";
+import type { z } from "zod/v4";
 import type { ServerTaskCapabilitiesV1 } from "../core/v1/index.js";
 import type { ErrorV2, TasksExtensionCapabilityV2 } from "../core/v2/index.js";
 import { JsonRpcResponseError } from "./api.js";
@@ -123,11 +124,9 @@ export async function dispatchWithRetry(
   }
 }
 
-/** Decodes a successful JSON value or throws its protocol decode error. */
-export function decodeResult<T>(codec: RuntimeCodec<T>, value: JsonValue): T {
-  const decoded = codec.parse(value);
-  if (!decoded.success) throw decoded.error;
-  return decoded.value;
+/** Validates and parses a JSON-RPC result with the supplied Zod schema. */
+export function parseResult<T>(schema: z.ZodType<T>, value: JsonValue): T {
+  return schema.parse(value);
 }
 
 /** Unwraps a JSON-RPC result or throws the response error. */

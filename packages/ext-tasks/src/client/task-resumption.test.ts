@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { expectRecord, type TaskId } from "../core/index.js";
+import { type TaskId } from "../core/index.js";
 import {
   DispatchError,
   InputCorrelationError,
@@ -14,6 +14,7 @@ import {
   asJson,
   formatJson,
   asError,
+  expectRecord,
 } from "../../test-support/client/fake-port.js";
 
 describe("task reference resumption", () => {

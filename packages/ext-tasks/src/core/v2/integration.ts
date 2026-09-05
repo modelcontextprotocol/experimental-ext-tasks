@@ -1,14 +1,14 @@
 /** MCP Tasks V2 guards, capability integration, and subscription helpers. */
 import { type JsonValue } from "../index.js";
 import {
-  CreateTaskResultV2Codec,
-  DetailedTaskV2Codec,
-  GetTaskRequestV2Codec,
-  TaskStatusNotificationV2Codec,
-  TaskV2Codec,
-  UpdateTaskRequestV2Codec,
-  CancelTaskRequestV2Codec,
-} from "./codecs.js";
+  CreateTaskResultV2Schema,
+  DetailedTaskV2Schema,
+  GetTaskRequestV2Schema,
+  TaskStatusNotificationV2Schema,
+  TaskV2Schema,
+  UpdateTaskRequestV2Schema,
+  CancelTaskRequestV2Schema,
+} from "./schemas.js";
 import {
   CLIENT_CAPABILITIES_META_KEY_V2,
   TASKS_EXTENSION_ID_V2,
@@ -20,48 +20,48 @@ import {
   type TaskV2,
   type UpdateTaskRequestV2,
   type CancelTaskRequestV2,
-} from "./wire.js";
+} from "./schemas.js";
 function parsed<T>(
-  codec: { parse(value: unknown): { success: boolean } },
+  schema: { safeParse(value: unknown): { success: boolean } },
   value: unknown,
 ): value is T {
-  return codec.parse(value).success;
+  return schema.safeParse(value).success;
 }
 export const isTaskV2: (value: unknown) => value is TaskV2 = (
   value: unknown,
-): value is TaskV2 => parsed<TaskV2>(TaskV2Codec, value);
+): value is TaskV2 => parsed<TaskV2>(TaskV2Schema, value);
 export const isDetailedTaskV2: (value: unknown) => value is DetailedTaskV2 = (
   value: unknown,
 ): value is DetailedTaskV2 =>
-  parsed<DetailedTaskV2>(DetailedTaskV2Codec, value);
+  parsed<DetailedTaskV2>(DetailedTaskV2Schema, value);
 export const isCreateTaskResultV2: (
   value: unknown,
 ) => value is CreateTaskResultV2 = (
   value: unknown,
 ): value is CreateTaskResultV2 =>
-  parsed<CreateTaskResultV2>(CreateTaskResultV2Codec, value);
+  parsed<CreateTaskResultV2>(CreateTaskResultV2Schema, value);
 export const isGetTaskRequestV2: (
   value: unknown,
 ) => value is GetTaskRequestV2 = (value: unknown): value is GetTaskRequestV2 =>
-  parsed<GetTaskRequestV2>(GetTaskRequestV2Codec, value);
+  parsed<GetTaskRequestV2>(GetTaskRequestV2Schema, value);
 export const isUpdateTaskRequestV2: (
   value: unknown,
 ) => value is UpdateTaskRequestV2 = (
   value: unknown,
 ): value is UpdateTaskRequestV2 =>
-  parsed<UpdateTaskRequestV2>(UpdateTaskRequestV2Codec, value);
+  parsed<UpdateTaskRequestV2>(UpdateTaskRequestV2Schema, value);
 export const isCancelTaskRequestV2: (
   value: unknown,
 ) => value is CancelTaskRequestV2 = (
   value: unknown,
 ): value is CancelTaskRequestV2 =>
-  parsed<CancelTaskRequestV2>(CancelTaskRequestV2Codec, value);
+  parsed<CancelTaskRequestV2>(CancelTaskRequestV2Schema, value);
 export const isTaskStatusNotificationV2: (
   value: unknown,
 ) => value is TaskStatusNotificationV2 = (
   value: unknown,
 ): value is TaskStatusNotificationV2 =>
-  parsed<TaskStatusNotificationV2>(TaskStatusNotificationV2Codec, value);
+  parsed<TaskStatusNotificationV2>(TaskStatusNotificationV2Schema, value);
 
 /**
  * Recognizes a decoded task-creation result only when it belongs to `tools/call`.

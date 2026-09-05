@@ -1,10 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import {
-  createRuntimeCodec,
-  expectRecord,
-  type JsonValue,
-} from "../core/index.js";
+import { type JsonValue } from "../core/index.js";
+import { z } from "zod/v4";
 import { DispatchError, JsonRpcResponseError, withTasks } from "./index.js";
 import { FakePort, asJson } from "../../test-support/client/fake-port.js";
 
@@ -47,23 +44,26 @@ describe("immediate and session basics", () => {
     );
   });
 
-  it("uses an application result codec at the dispatch boundary", async () => {
+  it("uses an application result schema at the dispatch boundary", async () => {
     const port = new FakePort();
     port.response = { kind: "result", result: { answer: 42 } };
-    const codec = createRuntimeCodec((value) => {
-      const record = expectRecord(value);
-      if (typeof record.answer !== "number") throw new Error("answer required");
-      return record.answer;
-    });
+    const resultSchema = z
+      .object({ answer: z.number() })
+      .transform(({ answer }) => String(answer));
     const session = withTasks<string>(port, {
       tools: { currentTool: () => undefined },
     });
     const execution = await session.callTool("answer", undefined, {
-      resultCodec: codec,
+      resultSchema,
       applicationContext: "ctx",
     });
     expect(execution.applicationContext).toBe("ctx");
-    await expect(execution.result()).resolves.toBe(42);
+    await expect(execution.result()).resolves.toBe("42");
+
+    port.response = { kind: "result", result: { answer: "invalid" } };
+    await expect(
+      session.callTool("answer", undefined, { resultSchema }),
+    ).rejects.toBeInstanceOf(z.ZodError);
     await session.close();
   });
 
