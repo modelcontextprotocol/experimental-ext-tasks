@@ -25,6 +25,22 @@ import {
 function parsed<T>(schema: z.ZodType<T>, value: unknown): value is T {
   return schema.safeParse(value).success;
 }
+
+function asObjectRecord(
+  value: unknown,
+): Readonly<Record<string, unknown>> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined;
+}
+
+function hasOwnTaskExtension(value: unknown): boolean {
+  const extensions = asObjectRecord(value);
+  return (
+    extensions !== undefined &&
+    Object.prototype.hasOwnProperty.call(extensions, TASKS_EXTENSION_ID_V2)
+  );
+}
 export const isTaskV2: (value: unknown) => value is TaskV2 = (
   value: unknown,
 ): value is TaskV2 => parsed<TaskV2>(TaskV2Schema, value);
@@ -76,27 +92,12 @@ export function isToolCallTaskResultV2(
  * returning false for malformed or missing containers.
  */
 export function hasTaskClientCapabilityV2(value: unknown): boolean {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const meta = (value as { _meta?: unknown })._meta;
-  if (meta === null || typeof meta !== "object" || Array.isArray(meta))
-    return false;
-  const capabilities = (meta as Record<string, unknown>)[
-    CLIENT_CAPABILITIES_META_KEY_V2
-  ];
-  if (
-    capabilities === null ||
-    typeof capabilities !== "object" ||
-    Array.isArray(capabilities)
-  )
-    return false;
-  const extensions = (capabilities as { extensions?: unknown }).extensions;
-  return (
-    extensions !== null &&
-    typeof extensions === "object" &&
-    !Array.isArray(extensions) &&
-    Object.prototype.hasOwnProperty.call(extensions, TASKS_EXTENSION_ID_V2)
+  const params = asObjectRecord(value);
+  const metadata = asObjectRecord(params?._meta);
+  const clientCapabilities = asObjectRecord(
+    metadata?.[CLIENT_CAPABILITIES_META_KEY_V2],
   );
+  return hasOwnTaskExtension(clientCapabilities?.extensions);
 }
 /**
  * Narrows an object-shaped server capability envelope when its extensions own the tasks key.
@@ -104,15 +105,8 @@ export function hasTaskClientCapabilityV2(value: unknown): boolean {
 export function hasTaskServerCapabilityV2(
   value: unknown,
 ): value is ServerTaskCapabilityEnvelopeV2 {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const extensions = (value as { extensions?: unknown }).extensions;
-  return (
-    extensions !== null &&
-    typeof extensions === "object" &&
-    !Array.isArray(extensions) &&
-    Object.prototype.hasOwnProperty.call(extensions, TASKS_EXTENSION_ID_V2)
-  );
+  const serverCapabilities = asObjectRecord(value);
+  return hasOwnTaskExtension(serverCapabilities?.extensions);
 }
 
 /**
@@ -122,17 +116,14 @@ export function hasTaskServerCapabilityV2(
 export function withTaskCapabilityV2<
   T extends Readonly<Record<string, JsonValue>>,
 >(params: T): T & Readonly<Record<string, JsonValue>> {
-  const wireMeta = params._meta;
-  const base: Readonly<Record<string, JsonValue>> =
-    wireMeta !== null &&
-    typeof wireMeta === "object" &&
-    !Array.isArray(wireMeta)
-      ? (wireMeta as Readonly<Record<string, JsonValue>>)
-      : {};
+  const existingMetadata = asObjectRecord(params._meta) ?? {};
   const capability = { extensions: { [TASKS_EXTENSION_ID_V2]: {} } };
   return {
     ...params,
-    _meta: { ...base, [CLIENT_CAPABILITIES_META_KEY_V2]: capability },
+    _meta: {
+      ...existingMetadata,
+      [CLIENT_CAPABILITIES_META_KEY_V2]: capability,
+    },
   };
 }
 
@@ -150,16 +141,13 @@ export function contributeTaskFilterV2<
     readonly taskIds: readonly string[];
   };
 } {
-  const notifications = filter.notifications;
-  const prior: Readonly<Record<string, JsonValue>> =
-    notifications !== null &&
-    typeof notifications === "object" &&
-    !Array.isArray(notifications)
-      ? (notifications as Readonly<Record<string, JsonValue>>)
-      : {};
+  const existingNotifications = asObjectRecord(filter.notifications) ?? {};
   return {
     ...filter,
-    notifications: { ...prior, taskIds: [...new Set(taskIds)] },
+    notifications: {
+      ...existingNotifications,
+      taskIds: [...new Set(taskIds)],
+    },
   };
 }
 /**
@@ -167,17 +155,11 @@ export function contributeTaskFilterV2<
  * any enclosing value is malformed or any ID is not a string.
  */
 export function readAcceptedTaskIdsV2(value: unknown): readonly string[] {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return [];
-  const notifications = (value as { notifications?: unknown }).notifications;
-  if (
-    notifications === null ||
-    typeof notifications !== "object" ||
-    Array.isArray(notifications)
-  )
-    return [];
-  const ids = (notifications as { taskIds?: unknown }).taskIds;
-  return Array.isArray(ids) && ids.every((id) => typeof id === "string")
-    ? [...ids]
+  const acceptedFilter = asObjectRecord(value);
+  const notifications = asObjectRecord(acceptedFilter?.notifications);
+  const acceptedTaskIds = notifications?.taskIds;
+  return Array.isArray(acceptedTaskIds) &&
+    acceptedTaskIds.every((taskId) => typeof taskId === "string")
+    ? [...acceptedTaskIds]
     : [];
 }

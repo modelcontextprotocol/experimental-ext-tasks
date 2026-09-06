@@ -26,9 +26,6 @@ import {
 } from "../core/v2/index.js";
 import {
   InputCorrelationError,
-  type ApplicationInputRequest,
-  type InputCorrelationFailureReason,
-  type ResolvedInputExchangeContext,
   type SerializedTaskReference,
   type TaskEnabledSession,
   type TaskHandle,
@@ -43,9 +40,12 @@ import {
   reasonAsError,
 } from "./execution.js";
 import {
+  buildResolvedInputContext,
   defaultServerRequestResponse,
   nextExecutionIdentifier,
-  requestParams,
+  projectApplicationInputRequest,
+  readRelatedTaskEvidence,
+  resolveInputCandidate,
   throwIfAborted,
   type OrdinaryInputCandidate,
   type V1TaskInputCandidate,
@@ -521,115 +521,32 @@ class PortTaskEnabledSession<
   private async handleServerRequest(
     incoming: IncomingServerRequest,
   ): Promise<JsonRpcResponse> {
-    if (
-      incoming.request === null ||
-      Array.isArray(incoming.request) ||
-      typeof incoming.request !== "object"
-    ) {
-      return defaultServerRequestResponse(incoming);
-    }
-    const wire = incoming.request as Readonly<Record<string, JsonValue>>;
-    const method = wire.method;
-    const request: ApplicationInputRequest | undefined =
-      method === "elicitation/create"
-        ? { kind: "elicitation", params: requestParams(wire) }
-        : method === "sampling/createMessage"
-          ? { kind: "sampling", params: requestParams(wire) }
-          : method === "roots/list"
-            ? {
-                kind: "roots",
-                ...(Object.hasOwn(wire, "params")
-                  ? { params: requestParams(wire) }
-                  : {}),
-              }
-            : undefined;
+    const request = projectApplicationInputRequest(incoming);
     if (request === undefined) return defaultServerRequestResponse(incoming);
-    const taskCandidates = [...this.v1TaskInputCandidates.values()];
-    const ordinaryCandidates = [...this.ordinaryInputCandidates.values()];
-    const params = request.params;
-    const meta = params?._meta;
-    const relatedTaskKey = "io.modelcontextprotocol/related-task";
-    let evidence: "absent" | "invalid" | { readonly taskId: string };
-    if (meta === undefined) evidence = "absent";
-    else if (meta === null || Array.isArray(meta) || typeof meta !== "object")
-      evidence = "invalid";
-    else {
-      const relatedTask = (meta as Readonly<Record<string, JsonValue>>)[
-        relatedTaskKey
-      ];
-      if (!Object.hasOwn(meta, relatedTaskKey)) evidence = "absent";
-      else if (
-        relatedTask === null ||
-        Array.isArray(relatedTask) ||
-        typeof relatedTask !== "object" ||
-        typeof (relatedTask as Readonly<Record<string, JsonValue>>).taskId !==
-          "string"
-      )
-        evidence = "invalid";
-      else
-        evidence = {
-          taskId: (relatedTask as Readonly<Record<string, JsonValue>>)
-            .taskId as string,
-        };
-    }
-    const allCandidates = [...ordinaryCandidates, ...taskCandidates];
-    const matches =
-      evidence === "absent" || evidence === "invalid"
-        ? allCandidates
-        : taskCandidates.filter(
-            (candidate) => candidate.taskId === evidence.taskId,
-          );
-    const failureReason: InputCorrelationFailureReason | undefined =
-      evidence === "invalid"
-        ? "invalid-evidence"
-        : evidence === "absent" && matches.length === 0
-          ? "missing-evidence"
-          : matches.length === 0
-            ? "zero-matches"
-            : matches.length > 1
-              ? "ambiguous-matches"
-              : undefined;
-    if (failureReason !== undefined) {
-      const candidates = matches.map((candidate) => ({
-        generation: candidate.generation,
-        toolName: candidate.toolName,
-        executionId: candidate.executionId,
-        applicationContext: candidate.applicationContext,
-      }));
+
+    const resolution = resolveInputCandidate(
+      readRelatedTaskEvidence(request),
+      [...this.ordinaryInputCandidates.values()],
+      [...this.v1TaskInputCandidates.values()],
+    );
+    if (resolution.kind === "failed") {
       this.reportBackgroundError(
         new InputCorrelationError(
           this.port.taskCapabilities.generation === "none"
             ? "v1"
             : this.port.taskCapabilities.generation,
           request.kind,
-          candidates,
-          failureReason,
+          resolution.candidates,
+          resolution.reason,
         ),
       );
       return defaultServerRequestResponse(incoming);
     }
-    const candidate = matches[0];
     if (this.options.onInputRequest === undefined)
       return defaultServerRequestResponse(incoming);
+
     try {
-      const context: ResolvedInputExchangeContext<TApplicationContext> =
-        candidate.lifetime === "task-v1"
-          ? {
-              lifetime: "task-v1",
-              taskId: candidate.taskId,
-              applicationContext: candidate.applicationContext,
-              ...(candidate.signal === undefined
-                ? {}
-                : { signal: candidate.signal }),
-            }
-          : {
-              lifetime: "basic",
-              executionId: candidate.executionId,
-              applicationContext: candidate.applicationContext,
-              ...(candidate.signal === undefined
-                ? {}
-                : { signal: candidate.signal }),
-            };
+      const context = buildResolvedInputContext(resolution.candidate);
       const result = await this.options.onInputRequest(request, context);
       if (!isJsonValue(result))
         throw new Error("Input handler returned a non-JSON value");

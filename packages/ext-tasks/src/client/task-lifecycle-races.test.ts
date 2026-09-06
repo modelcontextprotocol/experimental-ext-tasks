@@ -621,6 +621,73 @@ describe("task lifecycle and races", () => {
     await session.close();
   });
 
+  it("captures a terminal notification emitted during observation startup", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    let observationSignal: AbortSignal | undefined;
+    port.dispatchHandler = async (request, options) => {
+      const record = expectRecord(request);
+      if (record.method === "tools/call") {
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "task",
+            taskId: "synchronous-notification",
+            status: "working",
+            createdAt: "a",
+            lastUpdatedAt: "a",
+            ttlMs: null,
+            pollIntervalMs: 10,
+          }),
+        };
+      }
+      if (record.method === "tasks/get") {
+        const signal = options?.signal;
+        if (signal === undefined)
+          throw new Error("observation signal is required");
+        observationSignal = signal;
+        port.notify(
+          asJson({
+            jsonrpc: "2.0",
+            method: "notifications/tasks",
+            params: {
+              taskId: "synchronous-notification",
+              status: "completed",
+              createdAt: "a",
+              lastUpdatedAt: "b",
+              ttlMs: null,
+              result: { content: [] },
+            },
+          }),
+        );
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              reject(asError(signal.reason));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (record.method === "tasks/cancel") {
+        return { kind: "result", result: { resultType: "complete" } };
+      }
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
+    };
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+      },
+    });
+    const execution = await session.callTool("x");
+    await expect(execution.result()).resolves.toEqual({
+      resultType: "complete",
+      content: [],
+    });
+    expect(observationSignal?.aborted).toBe(true);
+    await session.close();
+  });
+
   it("caller abort does not poison the shared cancellation attempt", async () => {
     const port = new FakePort({ generation: "v2", capabilities: {} });
     let cancelCalls = 0;

@@ -285,6 +285,7 @@ describe("V2 input and task behavior", () => {
     expect(
       errors.some((error) => error.message.includes("reused incompatibly")),
     ).toBe(true);
+    expect(errors.some((error) => error.message === "declined")).toBe(true);
     expect(
       port.requests.filter(
         (request) => expectRecord(request).method === "tasks/update",
@@ -346,6 +347,7 @@ describe("V2 input and task behavior", () => {
         return { kind: "result", result: { resultType: "complete" } };
       throw new Error(`unexpected method ${formatJson(method)}`);
     };
+    const errors: Error[] = [];
     const session = withTasks(port, {
       tools: {
         currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
@@ -354,6 +356,7 @@ describe("V2 input and task behavior", () => {
         await Promise.resolve();
         throw new Error("declined");
       },
+      onError: (error) => errors.push(error),
     });
     const execution = await session.callTool("x");
     await expect(execution.result()).resolves.toMatchObject({
@@ -368,6 +371,8 @@ describe("V2 input and task behavior", () => {
     ).toEqual({
       elicit: { action: "cancel" },
     });
+    expect(errors).toHaveLength(3);
+    expect(errors.every((error) => error.message === "declined")).toBe(true);
     await session.close();
   });
 

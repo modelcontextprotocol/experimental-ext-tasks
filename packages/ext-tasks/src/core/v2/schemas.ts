@@ -16,6 +16,22 @@ const JsonObjectSchema = z.custom<Readonly<Record<string, JsonValue>>>(
   "Expected a JSON object",
 );
 const MetaSchema = JsonObjectSchema;
+const copyUndeclaredJsonKeys = (
+  target: Record<string, unknown>,
+  source: Readonly<Record<string, JsonValue>>,
+  declaredKeys: ReadonlySet<string>,
+): void => {
+  for (const key of Object.keys(source)) {
+    if (declaredKeys.has(key)) continue;
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      value: source[key],
+      writable: true,
+    });
+  }
+};
+
 const openObject = <T extends z.ZodRawShape>(shape: T) => {
   const validator = z.object(shape).catchall(JsonValueSchema);
   const declaredKeys = new Set(Object.keys(shape));
@@ -23,16 +39,11 @@ const openObject = <T extends z.ZodRawShape>(shape: T) => {
     const parsed = validator.safeParse(value);
     if (parsed.success) {
       const data = parsed.data;
-      const source = value as Readonly<Record<string, JsonValue>>;
-      for (const key of Object.keys(source)) {
-        if (declaredKeys.has(key)) continue;
-        Object.defineProperty(data, key, {
-          configurable: true,
-          enumerable: true,
-          value: source[key],
-          writable: true,
-        });
-      }
+      copyUndeclaredJsonKeys(
+        data,
+        value as Readonly<Record<string, JsonValue>>,
+        declaredKeys,
+      );
       return data;
     }
     for (const issue of parsed.error.issues)
@@ -73,40 +84,45 @@ const ContentBaseShape = {
   annotations: AnnotationsV2Schema.optional(),
   _meta: MetaSchema.optional(),
 };
+const TextContentBlockV2Schema = openObject({
+  ...ContentBaseShape,
+  type: z.literal("text"),
+  text: z.string(),
+});
+const ImageContentBlockV2Schema = openObject({
+  ...ContentBaseShape,
+  type: z.literal("image"),
+  data: z.string(),
+  mimeType: z.string(),
+});
+const AudioContentBlockV2Schema = openObject({
+  ...ContentBaseShape,
+  type: z.literal("audio"),
+  data: z.string(),
+  mimeType: z.string(),
+});
+const ResourceLinkContentBlockV2Schema = openObject({
+  ...ContentBaseShape,
+  type: z.literal("resource_link"),
+  name: z.string(),
+  uri: z.string(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  mimeType: z.string().optional(),
+  size: z.int().optional(),
+  icons: z.array(IconV2Schema).optional(),
+});
+const EmbeddedResourceContentBlockV2Schema = openObject({
+  ...ContentBaseShape,
+  type: z.literal("resource"),
+  resource: ResourceContentsV2Schema,
+});
 const ContentBlockV2Schema = z.union([
-  openObject({
-    ...ContentBaseShape,
-    type: z.literal("text"),
-    text: z.string(),
-  }),
-  openObject({
-    ...ContentBaseShape,
-    type: z.literal("image"),
-    data: z.string(),
-    mimeType: z.string(),
-  }),
-  openObject({
-    ...ContentBaseShape,
-    type: z.literal("audio"),
-    data: z.string(),
-    mimeType: z.string(),
-  }),
-  openObject({
-    ...ContentBaseShape,
-    type: z.literal("resource_link"),
-    name: z.string(),
-    uri: z.string(),
-    title: z.string().optional(),
-    description: z.string().optional(),
-    mimeType: z.string().optional(),
-    size: z.int().optional(),
-    icons: z.array(IconV2Schema).optional(),
-  }),
-  openObject({
-    ...ContentBaseShape,
-    type: z.literal("resource"),
-    resource: ResourceContentsV2Schema,
-  }),
+  TextContentBlockV2Schema,
+  ImageContentBlockV2Schema,
+  AudioContentBlockV2Schema,
+  ResourceLinkContentBlockV2Schema,
+  EmbeddedResourceContentBlockV2Schema,
 ]);
 
 const ToolV2Schema = openObject({
@@ -196,6 +212,7 @@ const ListRootsResultV2Schema = openObject({
 const ElicitResultV2Schema = openObject({
   action: z.enum(["accept", "decline", "cancel"]),
 });
+// Response shapes overlap, so this union is intentionally non-discriminated.
 const InputResponseUnionV2Schema = z.union([
   ElicitResultV2Schema,
   ListRootsResultV2Schema,
@@ -242,11 +259,15 @@ const CreateTaskResultV2Schema = z.object({
   _meta: MetaSchema.optional(),
 });
 const RpcBaseShape = { jsonrpc: z.literal("2.0"), id: RequestIdV2Schema };
-const GetTaskRequestV2Schema = z.object({
-  ...RpcBaseShape,
-  method: z.literal("tasks/get"),
-  params: z.object({ taskId: z.string() }),
-});
+const taskIdRequestV2Schema = <TMethod extends "tasks/get" | "tasks/cancel">(
+  method: TMethod,
+) =>
+  z.object({
+    ...RpcBaseShape,
+    method: z.literal(method),
+    params: z.object({ taskId: z.string() }),
+  });
+const GetTaskRequestV2Schema = taskIdRequestV2Schema("tasks/get");
 const UpdateTaskRequestV2Schema = z.object({
   ...RpcBaseShape,
   method: z.literal("tasks/update"),
@@ -255,11 +276,7 @@ const UpdateTaskRequestV2Schema = z.object({
     inputResponses: InputResponsesV2Schema,
   }),
 });
-const CancelTaskRequestV2Schema = z.object({
-  ...RpcBaseShape,
-  method: z.literal("tasks/cancel"),
-  params: z.object({ taskId: z.string() }),
-});
+const CancelTaskRequestV2Schema = taskIdRequestV2Schema("tasks/cancel");
 const GetTaskResultV2Schema = z.intersection(
   DetailedTaskV2Schema,
   z.object({
@@ -267,14 +284,14 @@ const GetTaskResultV2Schema = z.intersection(
     _meta: MetaSchema.optional(),
   }),
 );
-const UpdateTaskResultV2Schema = openObject({
+const CompleteOperationResultShape = {
   resultType: CompleteResultTypeSchema,
   _meta: MetaSchema.optional(),
-});
-const CancelTaskResultV2Schema = openObject({
-  resultType: CompleteResultTypeSchema,
-  _meta: MetaSchema.optional(),
-});
+};
+const completeOperationResultV2Schema = () =>
+  openObject(CompleteOperationResultShape);
+const UpdateTaskResultV2Schema = completeOperationResultV2Schema();
+const CancelTaskResultV2Schema = completeOperationResultV2Schema();
 
 const TaskStatusNotificationParamsV2Schema = z.intersection(
   DetailedTaskV2Schema,

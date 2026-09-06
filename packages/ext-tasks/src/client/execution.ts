@@ -41,6 +41,11 @@ export const DEFAULT_TASK_POLL_INTERVAL_MS = 10;
 type TaskTurn =
   { readonly sequence: number; readonly snapshot: TaskSnapshot } | undefined;
 
+function wakeAll(waiters: Set<() => void>): void {
+  for (const wake of waiters) wake();
+  waiters.clear();
+}
+
 export type TaskDriver<TResult> = (
   accept: (snapshot: TaskSnapshot) => void,
   waitForTurn: (
@@ -104,11 +109,11 @@ export class TaskExecution<
     }
     this.resultPromise = driver(
       (snapshot) => {
-        this.accept(snapshot);
+        this.acceptSnapshot(snapshot);
       },
       (afterSequence, delayMs) => this.waitForTurn(afterSequence, delayMs),
       (afterSequence, observation) =>
-        this.observeOrNotification(afterSequence, observation),
+        this.observeUntilNotification(afterSequence, observation),
       this.controller.signal,
       this.cancelledError,
       this.closedError,
@@ -136,10 +141,8 @@ export class TaskExecution<
     }
     this.latestNotification = snapshot;
     this.notificationSequence += 1;
-    for (const wake of this.notificationWaiters) wake();
-    this.notificationWaiters.clear();
-    for (const wake of this.updateWaiters) wake();
-    this.updateWaiters.clear();
+    wakeAll(this.notificationWaiters);
+    wakeAll(this.updateWaiters);
   }
 
   updates(signal?: AbortSignal): AsyncIterable<TaskSnapshot> {
@@ -153,21 +156,8 @@ export class TaskExecution<
   ): AsyncIterable<TaskSnapshot> {
     for (;;) {
       throwIfAborted(signal);
-      if (this.initialSnapshot !== undefined) {
-        const snapshot = this.initialSnapshot;
-        this.initialSnapshot = undefined;
-        yield snapshot;
-        continue;
-      }
-      if (this.pendingSnapshot !== undefined) {
-        const snapshot = this.pendingSnapshot;
-        this.pendingSnapshot = undefined;
-        yield snapshot;
-        continue;
-      }
-      if (this.terminalSnapshot !== undefined) {
-        const snapshot = this.terminalSnapshot;
-        this.terminalSnapshot = undefined;
+      const snapshot = this.takeQueuedUpdate();
+      if (snapshot !== undefined) {
         yield snapshot;
         continue;
       }
@@ -176,7 +166,23 @@ export class TaskExecution<
     }
   }
 
-  private accept(snapshot: TaskSnapshot): void {
+  private takeQueuedUpdate(): TaskSnapshot | undefined {
+    if (this.initialSnapshot !== undefined) {
+      const snapshot = this.initialSnapshot;
+      this.initialSnapshot = undefined;
+      return snapshot;
+    }
+    if (this.pendingSnapshot !== undefined) {
+      const snapshot = this.pendingSnapshot;
+      this.pendingSnapshot = undefined;
+      return snapshot;
+    }
+    const snapshot = this.terminalSnapshot;
+    this.terminalSnapshot = undefined;
+    return snapshot;
+  }
+
+  private acceptSnapshot(snapshot: TaskSnapshot): void {
     if (this.closed) return;
     const bytes = deterministicJson(snapshot);
     if (bytes === this.lastAcceptedBytes) return;
@@ -190,8 +196,7 @@ export class TaskExecution<
     } else if (this.terminalSnapshotBytes === undefined) {
       this.pendingSnapshot = snapshot;
     }
-    for (const wake of this.updateWaiters) wake();
-    this.updateWaiters.clear();
+    wakeAll(this.updateWaiters);
   }
 
   private async waitForUpdateOrResult(signal?: AbortSignal): Promise<boolean> {
@@ -223,7 +228,7 @@ export class TaskExecution<
     }
   }
 
-  private currentTurn(afterSequence: number): TaskTurn {
+  private notificationAfter(afterSequence: number): TaskTurn {
     if (
       this.notificationSequence > afterSequence &&
       this.latestNotification !== undefined
@@ -240,12 +245,12 @@ export class TaskExecution<
     afterSequence: number,
     delayMs: number | undefined,
   ): Promise<TaskTurn> {
-    const current = this.currentTurn(afterSequence);
+    const current = this.notificationAfter(afterSequence);
     if (current !== undefined) return current;
     if (delayMs === undefined) {
       await Promise.resolve();
       throwIfAborted(this.controller.signal);
-      return this.currentTurn(afterSequence);
+      return this.notificationAfter(afterSequence);
     }
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: unknown): void => {
@@ -265,26 +270,30 @@ export class TaskExecution<
       this.notificationWaiters.add(onNotification);
       this.controller.signal.addEventListener("abort", onAbort, { once: true });
     });
-    return this.currentTurn(afterSequence);
+    return this.notificationAfter(afterSequence);
   }
 
-  private async observeOrNotification(
+  private async observeUntilNotification(
     afterSequence: number,
     observation: (signal: AbortSignal) => Promise<TaskSnapshot>,
   ): Promise<TaskTurn> {
-    const current = this.currentTurn(afterSequence);
-    if (current !== undefined) return current;
-    const observationLifecycle = linkAbortSignals(this.controller.signal);
-    const observationPromise = observation(observationLifecycle.signal);
-    void observationPromise.catch(() => {});
     let wake: (() => void) | undefined;
     const notified = new Promise<TaskTurn>((resolve) => {
       wake = () => {
-        resolve(this.currentTurn(afterSequence));
+        resolve(this.notificationAfter(afterSequence));
       };
       this.notificationWaiters.add(wake);
     });
+    const current = this.notificationAfter(afterSequence);
+    if (current !== undefined) {
+      if (wake !== undefined) this.notificationWaiters.delete(wake);
+      return current;
+    }
+
+    const observationLifecycle = linkAbortSignals(this.controller.signal);
     try {
+      const observationPromise = observation(observationLifecycle.signal);
+      void observationPromise.catch(() => {});
       return await withAbort(
         Promise.race([
           observationPromise.then((snapshot) => ({
@@ -360,7 +369,7 @@ export function deterministicJson(value: unknown): string {
     .join(",")}}`;
 }
 
-/** Returns whether a V1 task status is terminal. */
+/** Returns whether a task status is terminal. */
 export function terminalStatus(status: TaskV1["status"]): boolean {
   return (
     status === "completed" || status === "failed" || status === "cancelled"
