@@ -46,60 +46,77 @@ function wakeAll(waiters: Set<() => void>): void {
   waiters.clear();
 }
 
-export type TaskDriver<TResult> = (
-  accept: (snapshot: TaskSnapshot) => void,
-  waitForTurn: (
+export interface TaskDriverContext {
+  readonly accept: (snapshot: TaskSnapshot) => TaskSnapshot;
+  readonly nextObservation: (
     afterSequence: number,
     delayMs: number | undefined,
-  ) => Promise<TaskTurn>,
-  observe: (
-    afterSequence: number,
     observation: (signal: AbortSignal) => Promise<TaskSnapshot>,
-  ) => Promise<TaskTurn>,
-  signal: AbortSignal,
-  cancelledError: Error,
-  closedError: Error,
-  isClosed: () => boolean,
-  inputSignal: AbortSignal,
+  ) => Promise<TaskTurn>;
+  readonly signal: AbortSignal;
+  readonly inputSignal: AbortSignal;
+  readonly errors: {
+    readonly cancelled: Error;
+    readonly closed: Error;
+  };
+  readonly isClosed: () => boolean;
+}
+
+export type TaskDriver<TResult> = (
+  context: TaskDriverContext,
 ) => Promise<TResult>;
+
+interface TaskExecutionOptions<TResult, TApplicationContext> {
+  readonly applicationContext: TApplicationContext;
+  readonly handle: TaskHandle;
+  readonly endpointId: string;
+  readonly initialSnapshot: TaskSnapshot;
+  readonly driver: TaskDriver<TResult>;
+  readonly cancelTask: (signal?: AbortSignal) => Promise<void>;
+  readonly lifecycleSignal?: AbortSignal;
+}
 
 export class TaskExecution<
   TResult,
   TApplicationContext,
 > implements ToolExecutionCommon<TResult, TApplicationContext> {
   readonly kind = "task" as const;
+  readonly applicationContext: TApplicationContext;
+  readonly handle: TaskHandle;
+  private readonly endpointId: string;
+  private readonly cancelTask: (signal?: AbortSignal) => Promise<void>;
   private readonly controller = new AbortController();
   private readonly inputController = new AbortController();
   private readonly cancellationController = new AbortController();
   private readonly resultPromise: Promise<TResult>;
   private readonly cancelledError = new Error("Task was cancelled");
   private readonly closedError = new TaskExecutionClosedError();
-  private readonly notificationWaiters = new Set<() => void>();
+  private readonly turnWaiters = new Set<() => void>();
   private readonly updateWaiters = new Set<() => void>();
   private initialSnapshot: TaskSnapshot | undefined;
   private pendingSnapshot: TaskSnapshot | undefined;
   private terminalSnapshot: TaskSnapshot | undefined;
-  private terminalSnapshotBytes: string | undefined;
+  private authoritativeTerminalSnapshot: TaskSnapshot | undefined;
   private lastAcceptedBytes: string;
   private notificationSequence = 0;
-  private latestNotification: TaskSnapshot | undefined;
+  private latestNotifiedSnapshot: TaskSnapshot | undefined;
   private updatesAcquired = false;
   private cancelPromise: Promise<void> | undefined;
   private closed = false;
 
-  constructor(
-    readonly applicationContext: TApplicationContext,
-    readonly handle: TaskHandle,
-    private readonly endpointId: string,
-    initialSnapshot: TaskSnapshot,
-    driver: TaskDriver<TResult>,
-    private readonly cancelTask: (signal?: AbortSignal) => Promise<void>,
-    lifecycleSignal?: AbortSignal,
-  ) {
-    this.initialSnapshot = initialSnapshot;
-    if (terminalStatus(initialSnapshot.task.status))
+  constructor(options: TaskExecutionOptions<TResult, TApplicationContext>) {
+    this.applicationContext = options.applicationContext;
+    this.handle = options.handle;
+    this.endpointId = options.endpointId;
+    this.cancelTask = options.cancelTask;
+    this.initialSnapshot = options.initialSnapshot;
+    const initialBytes = deterministicJson(options.initialSnapshot);
+    this.lastAcceptedBytes = initialBytes;
+    if (terminalStatus(options.initialSnapshot.task.status)) {
+      this.authoritativeTerminalSnapshot = options.initialSnapshot;
       this.inputController.abort();
-    this.lastAcceptedBytes = deterministicJson(initialSnapshot);
+    }
+    const { lifecycleSignal } = options;
     if (lifecycleSignal !== undefined) {
       const abort = (): void => {
         this.controller.abort(lifecycleSignal.reason);
@@ -107,19 +124,18 @@ export class TaskExecution<
       if (lifecycleSignal.aborted) abort();
       else lifecycleSignal.addEventListener("abort", abort, { once: true });
     }
-    this.resultPromise = driver(
-      (snapshot) => {
-        this.acceptSnapshot(snapshot);
+    this.resultPromise = options.driver({
+      accept: (snapshot) => this.acceptSnapshot(snapshot),
+      nextObservation: (afterSequence, delayMs, observation) =>
+        this.nextObservation(afterSequence, delayMs, observation),
+      signal: this.controller.signal,
+      inputSignal: this.inputController.signal,
+      errors: {
+        cancelled: this.cancelledError,
+        closed: this.closedError,
       },
-      (afterSequence, delayMs) => this.waitForTurn(afterSequence, delayMs),
-      (afterSequence, observation) =>
-        this.observeUntilNotification(afterSequence, observation),
-      this.controller.signal,
-      this.cancelledError,
-      this.closedError,
-      () => this.closed,
-      this.inputController.signal,
-    );
+      isClosed: () => this.closed,
+    });
   }
 
   serializeReference(): SerializedTaskReference {
@@ -129,20 +145,7 @@ export class TaskExecution<
   onNotification(snapshot: TaskSnapshot): void {
     if (this.closed || snapshot.generation !== this.handle.generation) return;
     if (snapshot.task.taskId !== this.handle.taskId) return;
-    const bytes = deterministicJson(snapshot);
-    if (terminalStatus(snapshot.task.status)) {
-      this.inputController.abort();
-      if (this.terminalSnapshotBytes === undefined) {
-        this.terminalSnapshot = snapshot;
-        this.terminalSnapshotBytes = bytes;
-      }
-    } else if (this.terminalSnapshotBytes !== undefined) {
-      return;
-    }
-    this.latestNotification = snapshot;
-    this.notificationSequence += 1;
-    wakeAll(this.notificationWaiters);
-    wakeAll(this.updateWaiters);
+    this.transitionSnapshot(snapshot, "notification");
   }
 
   updates(signal?: AbortSignal): AsyncIterable<TaskSnapshot> {
@@ -182,21 +185,43 @@ export class TaskExecution<
     return snapshot;
   }
 
-  private acceptSnapshot(snapshot: TaskSnapshot): void {
-    if (this.closed) return;
+  private acceptSnapshot(snapshot: TaskSnapshot): TaskSnapshot {
+    if (this.closed) return snapshot;
+    return this.transitionSnapshot(snapshot, "accepted");
+  }
+
+  private transitionSnapshot(
+    snapshot: TaskSnapshot,
+    source: "accepted" | "notification",
+  ): TaskSnapshot {
+    // The first terminal snapshot is authoritative across polling, notifications,
+    // result driving, and the update stream. Nothing may advance after it.
+    if (this.authoritativeTerminalSnapshot !== undefined)
+      return this.authoritativeTerminalSnapshot;
     const bytes = deterministicJson(snapshot);
-    if (bytes === this.lastAcceptedBytes) return;
-    this.lastAcceptedBytes = bytes;
+    if (source === "accepted" && bytes === this.lastAcceptedBytes)
+      return snapshot;
+
+    let queuedUpdate = false;
     if (terminalStatus(snapshot.task.status)) {
+      this.terminalSnapshot = snapshot;
+      queuedUpdate = true;
+      this.authoritativeTerminalSnapshot = snapshot;
       this.inputController.abort();
-      if (bytes !== this.terminalSnapshotBytes) {
-        this.terminalSnapshot ??= snapshot;
-        this.terminalSnapshotBytes ??= bytes;
-      }
-    } else if (this.terminalSnapshotBytes === undefined) {
+    } else if (source === "accepted") {
       this.pendingSnapshot = snapshot;
+      queuedUpdate = true;
     }
-    wakeAll(this.updateWaiters);
+
+    if (source === "accepted") {
+      this.lastAcceptedBytes = bytes;
+    } else {
+      this.latestNotifiedSnapshot = snapshot;
+      this.notificationSequence += 1;
+      wakeAll(this.turnWaiters);
+    }
+    if (queuedUpdate) wakeAll(this.updateWaiters);
+    return snapshot;
   }
 
   private async waitForUpdateOrResult(signal?: AbortSignal): Promise<boolean> {
@@ -228,14 +253,14 @@ export class TaskExecution<
     }
   }
 
-  private notificationAfter(afterSequence: number): TaskTurn {
+  private notifiedSnapshotAfter(afterSequence: number): TaskTurn {
     if (
       this.notificationSequence > afterSequence &&
-      this.latestNotification !== undefined
+      this.latestNotifiedSnapshot !== undefined
     ) {
       return {
         sequence: this.notificationSequence,
-        snapshot: this.latestNotification,
+        snapshot: this.latestNotifiedSnapshot,
       };
     }
     return undefined;
@@ -245,48 +270,54 @@ export class TaskExecution<
     afterSequence: number,
     delayMs: number | undefined,
   ): Promise<TaskTurn> {
-    const current = this.notificationAfter(afterSequence);
+    const current = this.notifiedSnapshotAfter(afterSequence);
     if (current !== undefined) return current;
     if (delayMs === undefined) {
       await Promise.resolve();
       throwIfAborted(this.controller.signal);
-      return this.notificationAfter(afterSequence);
+      return this.notifiedSnapshotAfter(afterSequence);
     }
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: unknown): void => {
         clearTimeout(timeout);
-        this.notificationWaiters.delete(onNotification);
+        this.turnWaiters.delete(onTurn);
         this.controller.signal.removeEventListener("abort", onAbort);
         if (error === undefined) resolve();
         else reject(reasonAsError(error));
       };
-      const onNotification = (): void => {
+      const onTurn = (): void => {
         finish();
       };
       const onAbort = (): void => {
         finish(this.controller.signal.reason);
       };
-      const timeout = setTimeout(onNotification, Math.max(0, delayMs));
-      this.notificationWaiters.add(onNotification);
+      const timeout = setTimeout(onTurn, Math.max(0, delayMs));
+      this.turnWaiters.add(onTurn);
       this.controller.signal.addEventListener("abort", onAbort, { once: true });
     });
-    return this.notificationAfter(afterSequence);
+    return this.notifiedSnapshotAfter(afterSequence);
   }
 
-  private async observeUntilNotification(
+  private async nextObservation(
     afterSequence: number,
+    delayMs: number | undefined,
     observation: (signal: AbortSignal) => Promise<TaskSnapshot>,
   ): Promise<TaskTurn> {
+    const turn = await this.waitForTurn(afterSequence, delayMs);
+    if (turn !== undefined) return turn;
+
     let wake: (() => void) | undefined;
     const notified = new Promise<TaskTurn>((resolve) => {
       wake = () => {
-        resolve(this.notificationAfter(afterSequence));
+        resolve(this.notifiedSnapshotAfter(afterSequence));
       };
-      this.notificationWaiters.add(wake);
+      this.turnWaiters.add(wake);
     });
-    const current = this.notificationAfter(afterSequence);
+    // Register before checking again so a notification cannot land between the
+    // clean check and observer registration.
+    const current = this.notifiedSnapshotAfter(afterSequence);
     if (current !== undefined) {
-      if (wake !== undefined) this.notificationWaiters.delete(wake);
+      if (wake !== undefined) this.turnWaiters.delete(wake);
       return current;
     }
 
@@ -307,7 +338,7 @@ export class TaskExecution<
     } finally {
       if (!observationLifecycle.signal.aborted) observationLifecycle.abort();
       observationLifecycle.dispose();
-      if (wake !== undefined) this.notificationWaiters.delete(wake);
+      if (wake !== undefined) this.turnWaiters.delete(wake);
     }
   }
 

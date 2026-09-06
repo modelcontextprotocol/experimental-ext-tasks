@@ -340,6 +340,87 @@ describe("task lifecycle and races", () => {
     await session.close();
   });
 
+  it("uses the same first terminal snapshot for updates and result", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    port.dispatchHandler = async (request) => {
+      const record = expectRecord(request);
+      if (record.method === "tools/call")
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "task",
+            taskId: "first-terminal",
+            status: "working",
+            createdAt: "a",
+            lastUpdatedAt: "a",
+            ttlMs: null,
+            pollIntervalMs: 1000,
+          }),
+        };
+      if (record.method === "tasks/get") return new Promise(() => {});
+      if (record.method === "tasks/cancel")
+        return { kind: "result", result: { resultType: "complete" } };
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
+    };
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+      },
+    });
+    const execution = await session.callTool("x");
+    const iterator = execution.updates()[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { task: { status: "working" } },
+    });
+
+    port.notify(
+      asJson({
+        jsonrpc: "2.0",
+        method: "notifications/tasks",
+        params: {
+          resultType: "complete",
+          taskId: "first-terminal",
+          status: "completed",
+          createdAt: "a",
+          lastUpdatedAt: "b",
+          ttlMs: null,
+          result: {
+            resultType: "complete",
+            content: [{ type: "text", text: "first" }],
+          },
+        },
+      }),
+    );
+    port.notify(
+      asJson({
+        jsonrpc: "2.0",
+        method: "notifications/tasks",
+        params: {
+          resultType: "complete",
+          taskId: "first-terminal",
+          status: "failed",
+          createdAt: "a",
+          lastUpdatedAt: "c",
+          ttlMs: null,
+          error: { code: -32000, message: "late terminal" },
+        },
+      }),
+    );
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { task: { status: "completed", lastUpdatedAt: "b" } },
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    await expect(execution.result()).resolves.toEqual({
+      resultType: "complete",
+      content: [{ type: "text", text: "first" }],
+    });
+    await session.close();
+  });
+
   it("does not retry complete JSON-RPC task errors", async () => {
     const port = new FakePort({ generation: "v2", capabilities: {} });
     let getCalls = 0;

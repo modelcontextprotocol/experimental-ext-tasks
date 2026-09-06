@@ -641,6 +641,86 @@ describe("V1 input and task behavior", () => {
     await session.close();
   });
 
+  it("keeps a notified V1 terminal authoritative after update delivery", async () => {
+    const port = new FakePort({
+      generation: "v1",
+      capabilities: { requests: { tools: { call: {} } } },
+    });
+    const tool: ToolV1 = {
+      name: "notified",
+      inputSchema: { type: "object" },
+      execution: { taskSupport: "required" },
+    };
+    let getCalls = 0;
+    port.dispatchHandler = async (request, options) => {
+      const record = expectRecord(request);
+      if (record.method === "tools/call")
+        return {
+          kind: "result",
+          result: asJson({
+            task: {
+              taskId: "v1-notified",
+              status: "working",
+              createdAt: "a",
+              lastUpdatedAt: "a",
+              ttl: null,
+              pollInterval: 1000,
+            },
+          }),
+        };
+      if (record.method === "tasks/get") {
+        getCalls += 1;
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(asError(options.signal?.reason));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (record.method === "tasks/result")
+        return {
+          kind: "result",
+          result: asJson({ content: [{ type: "text", text: "notified" }] }),
+        };
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
+    };
+    const session = withTasks(port, { tools: { currentTool: () => tool } });
+    const execution = await session.callTool("notified");
+    const iterator = execution.updates()[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { task: { status: "working" } },
+    });
+
+    port.notify(
+      asJson({
+        jsonrpc: "2.0",
+        method: "notifications/tasks/status",
+        params: {
+          taskId: "v1-notified",
+          status: "completed",
+          createdAt: "a",
+          lastUpdatedAt: "b",
+          ttl: null,
+        },
+      }),
+    );
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { task: { status: "completed" } },
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    await expect(execution.result()).resolves.toEqual({
+      content: [{ type: "text", text: "notified" }],
+    });
+    expect(getCalls).toBeLessThanOrEqual(1);
+    await session.close();
+  });
+
   it("identifies unsupported V1 cancellation without dispatching it", async () => {
     const port = new FakePort({
       generation: "v1",

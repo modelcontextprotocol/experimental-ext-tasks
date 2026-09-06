@@ -31,33 +31,22 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
 }): TaskExecution<TResult, TApplicationContext> {
   const { applicationContext, handle, initialTask, resultSchema, port } =
     options;
-  return new TaskExecution(
+  return new TaskExecution({
     applicationContext,
     handle,
-    port.endpointId,
-    { generation: "v1", task: initialTask },
-    async (
-      accept,
-      waitForTurn,
-      observe,
-      signal,
-      cancelledError,
-      closedError,
-      isClosed,
-    ) => {
+    endpointId: port.endpointId,
+    initialSnapshot: { generation: "v1", task: initialTask },
+    driver: async (context) => {
       let current = initialTask;
       let notificationSequence = 0;
       while (!terminalStatus(current.status)) {
-        const turn = await waitForTurn(
+        const observed = await context.nextObservation(
           notificationSequence,
           Math.max(
             DEFAULT_TASK_POLL_INTERVAL_MS,
             current.pollInterval ?? DEFAULT_TASK_POLL_INTERVAL_MS,
           ),
-        );
-        const observed =
-          turn ??
-          (await observe(notificationSequence, (observationSignal) =>
+          (observationSignal) =>
             dispatchWithRetry(
               port,
               { method: "tasks/get", params: { taskId: handle.taskId } },
@@ -70,28 +59,35 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
                 responseResult(response),
               ),
             })),
-          ));
-        if (observed?.snapshot.generation !== "v1") continue;
+        );
+        if (observed === undefined) continue;
+        if (observed.snapshot.generation !== "v1")
+          throw new Error("V1 task driver received a non-V1 snapshot");
         notificationSequence = observed.sequence;
         current = observed.snapshot.task;
-        if (!isClosed()) accept({ generation: "v1", task: current });
+        if (!context.isClosed()) {
+          const accepted = context.accept({ generation: "v1", task: current });
+          if (accepted.generation !== "v1")
+            throw new Error("V1 task driver accepted a non-V1 snapshot");
+          current = accepted.task;
+        }
       }
-      if (isClosed()) throw closedError;
-      if (current.status === "cancelled") throw cancelledError;
+      if (context.isClosed()) throw context.errors.closed;
+      if (current.status === "cancelled") throw context.errors.cancelled;
       if (current.status === "failed")
         throw new Error(current.statusMessage ?? "Task failed");
       const taskResult = responseResult(
         await dispatchWithRetry(
           port,
           { method: "tasks/result", params: { taskId: handle.taskId } },
-          signal,
+          context.signal,
           "observe",
         ),
       );
       parseResult(TaskResultV1Schema, taskResult);
       return parseResult(resultSchema, taskResult);
     },
-    async (signal) => {
+    cancelTask: async (signal) => {
       const capabilities = port.taskCapabilities;
       if (
         capabilities.generation !== "v1" ||
@@ -113,6 +109,6 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
         ),
       );
     },
-    options.lifecycleSignal,
-  );
+    lifecycleSignal: options.lifecycleSignal,
+  });
 }

@@ -211,7 +211,7 @@ describe("V2 input and task behavior", () => {
     );
   });
 
-  it("reports incompatible repeated V2 keys without reacquiring or updating", async () => {
+  it("does not reacquire repeated V2 keys and reports incompatible reuse", async () => {
     const errors: Error[] = [];
     const port = new FakePort({ generation: "v2", capabilities: {} });
     let getCalls = 0;
@@ -233,7 +233,7 @@ describe("V2 input and task behavior", () => {
         };
       if (method === "tasks/get") {
         getCalls += 1;
-        if (getCalls <= 2)
+        if (getCalls <= 3)
           return {
             kind: "result",
             result: asJson({
@@ -245,7 +245,7 @@ describe("V2 input and task behavior", () => {
               ttlMs: null,
               inputRequests: {
                 same:
-                  getCalls === 1
+                  getCalls <= 2
                     ? { method: "roots/list" }
                     : { method: "sampling/createMessage", params: {} },
               },
