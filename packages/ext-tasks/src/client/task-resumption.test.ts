@@ -87,7 +87,9 @@ describe("task reference resumption", () => {
         return new Promise((_resolve, reject) =>
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           ),
         );

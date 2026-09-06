@@ -71,7 +71,9 @@ function expectRoundTrip(schema: Schema, value: unknown): void {
 describe("V1 Zod wire schemas", () => {
   it("accepts every Task output and rejects missing fields, null exceptions, fractions, and statuses", () => {
     fc.assert(
-      fc.property(taskArb, (task) => expectRoundTrip(TaskV1Schema, task)),
+      fc.property(taskArb, (task) => {
+        expectRoundTrip(TaskV1Schema, task);
+      }),
     );
     fc.assert(
       fc.property(
@@ -84,8 +86,9 @@ describe("V1 Zod wire schemas", () => {
           "ttl",
         ),
         (task, key) => {
-          const invalid = { ...task };
-          delete invalid[key];
+          const invalid = Object.fromEntries(
+            Object.entries(task).filter(([candidate]) => candidate !== key),
+          );
           expect(TaskV1Schema.safeParse(invalid).success).toBe(false);
         },
       ),
@@ -160,8 +163,11 @@ describe("V1 Zod wire schemas", () => {
             schema.safeParse({ ...request, method: "tasks/nope" }).success,
           ).toBe(false);
           for (const key of ["jsonrpc", "id", "method", "params"] as const) {
-            const invalid = { ...request };
-            delete invalid[key];
+            const invalid = Object.fromEntries(
+              Object.entries(request).filter(
+                ([candidate]) => candidate !== key,
+              ),
+            );
             expect(schema.safeParse(invalid).success).toBe(false);
           }
           expect(schema.safeParse({ ...request, params: {} }).success).toBe(
@@ -203,30 +209,32 @@ describe("V1 Zod wire schemas", () => {
       fc.property(
         fc.array(taskArb),
         fc.option(fc.string(), { nil: undefined }),
-        (tasks, nextCursor) =>
+        (tasks, nextCursor) => {
           expectRoundTrip(ListTasksResultV1Schema, {
             tasks,
             ...(nextCursor === undefined ? {} : { nextCursor }),
-          }),
+          });
+        },
       ),
     );
     fc.assert(
       fc.property(
         idArb,
         fc.option(fc.string(), { nil: undefined }),
-        (id, cursor) =>
+        (id, cursor) => {
           expectRoundTrip(ListTasksRequestV1Schema, {
             jsonrpc: "2.0",
             id,
             method: "tasks/list",
             ...(cursor === undefined ? {} : { params: { cursor } }),
-          }),
+          });
+        },
       ),
     );
     fc.assert(
-      fc.property(jsonRecordArb, (result) =>
-        expectRoundTrip(TaskResultV1Schema, result),
-      ),
+      fc.property(jsonRecordArb, (result) => {
+        expectRoundTrip(TaskResultV1Schema, result);
+      }),
     );
   });
 
@@ -315,7 +323,7 @@ describe("V1 Zod wire schemas", () => {
         }),
         jsonRecordArb,
         fc.array(jsonRecordArb),
-        (name, taskSupport, metadata, icons) =>
+        (name, taskSupport, metadata, icons) => {
           expectRoundTrip(ToolV1Schema, {
             name,
             title: "title",
@@ -328,7 +336,8 @@ describe("V1 Zod wire schemas", () => {
             annotations: metadata,
             icons,
             _meta: metadata,
-          }),
+          });
+        },
       ),
     );
     expect(ToolV1Schema.safeParse({ name: "x", inputSchema: {} }).success).toBe(
@@ -342,14 +351,14 @@ describe("V1 Zod wire schemas", () => {
       }).success,
     ).toBe(false);
     fc.assert(
-      fc.property(idArb, fc.string(), jsonRecordArb, (id, name, args) =>
+      fc.property(idArb, fc.string(), jsonRecordArb, (id, name, args) => {
         expectRoundTrip(CallToolRequestV1Schema, {
           jsonrpc: "2.0",
           id,
           method: "tools/call",
           params: { name, arguments: args, task: {} },
-        }),
-      ),
+        });
+      }),
     );
     expectRoundTrip(ServerTaskCapabilitiesV1Schema, {
       list: {},

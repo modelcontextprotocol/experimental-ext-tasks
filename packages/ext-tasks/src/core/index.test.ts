@@ -43,7 +43,9 @@ describe("core runtime contracts", () => {
     sparse.length = 1;
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
-    class Exotic {}
+    class Exotic {
+      readonly marker = "non-plain";
+    }
     const nonJsonValues: readonly unknown[] = [
       undefined,
       1n,

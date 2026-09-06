@@ -8,7 +8,7 @@ export default tseslint.config(
     ignores: ["dist/**", "coverage/**", "schema/**"],
   },
   eslint.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
+  ...tseslint.configs.strictTypeChecked,
   {
     files: ["src/**/*.ts", "test-support/**/*.ts", "vitest.config.ts"],
     plugins: { jsdoc },

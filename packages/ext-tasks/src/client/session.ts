@@ -70,6 +70,12 @@ import { ManagedToolDeclarations } from "./tool-declarations.js";
 import { createTaskExecutionV1 } from "./task-protocol-v1.js";
 import { createTaskExecutionV2 } from "./task-protocol-v2.js";
 
+function isSupportedTaskReferenceOperation(reference: {
+  readonly originalOperation: unknown;
+}): boolean {
+  return reference.originalOperation === "tools/call";
+}
+
 class PortTaskEnabledSession<
   TApplicationContext,
 > implements TaskEnabledSession<TApplicationContext> {
@@ -104,11 +110,13 @@ class PortTaskEnabledSession<
         console.error(sinkError);
       }
     };
-    this.managedDeclarations =
-      options.tools === undefined
-        ? new ManagedToolDeclarations(port, reportError)
-        : undefined;
-    this.declarations = options.tools ?? this.managedDeclarations!;
+    if (options.tools === undefined) {
+      this.managedDeclarations = new ManagedToolDeclarations(port, reportError);
+      this.declarations = this.managedDeclarations;
+    } else {
+      this.managedDeclarations = undefined;
+      this.declarations = options.tools;
+    }
     const onSessionAbort = (): void => {
       const error =
         options.signal?.reason instanceof Error
@@ -123,9 +131,9 @@ class PortTaskEnabledSession<
       port.onServerRequest(async (incoming) =>
         this.handleServerRequest(incoming),
       ),
-      port.onNotification((notification) =>
-        this.handleNotification(notification),
-      ),
+      port.onNotification((notification) => {
+        this.handleNotification(notification);
+      }),
       port.onInvalidated((reason) => {
         const error = reasonAsError(reason);
         this.invalidationError ??= error;
@@ -222,8 +230,9 @@ class PortTaskEnabledSession<
       response = await withAbort(dispatchPromise, callSignal);
     } catch (error) {
       void dispatchPromise.then(
-        (lateResponse) =>
-          this.cleanupLateTaskCreation(lateResponse, generation, callAsTaskV1),
+        (lateResponse) => {
+          this.cleanupLateTaskCreation(lateResponse, generation, callAsTaskV1);
+        },
         () => {},
       );
       throw error;
@@ -285,7 +294,9 @@ class PortTaskEnabledSession<
           port: this.port,
           lifecycleSignal: this.lifecycleController.signal,
           onInputRequest: this.options.onInputRequest,
-          reportError: (error) => this.reportBackgroundError(error),
+          reportError: (error) => {
+            this.reportBackgroundError(error);
+          },
         }),
       );
     }
@@ -311,7 +322,7 @@ class PortTaskEnabledSession<
       throw new Error("Task reference belongs to a different endpoint");
     if (reference.generation !== capabilities.generation)
       throw new Error("Task reference generation does not match this session");
-    if (reference.originalOperation !== "tools/call")
+    if (!isSupportedTaskReferenceOperation(reference))
       throw new Error("Task reference operation is not supported");
 
     const resumeLifecycle = linkAbortSignals(
@@ -375,7 +386,9 @@ class PortTaskEnabledSession<
           port: this.port,
           lifecycleSignal: this.lifecycleController.signal,
           onInputRequest: this.options.onInputRequest,
-          reportError: (error) => this.reportBackgroundError(error),
+          reportError: (error) => {
+            this.reportBackgroundError(error);
+          },
         }),
       );
     } finally {
@@ -457,7 +470,9 @@ class PortTaskEnabledSession<
       );
       v1InputCandidate.signal?.addEventListener(
         "abort",
-        () => this.v1TaskInputCandidates.delete(v1InputCandidate.executionId),
+        () => {
+          this.v1TaskInputCandidates.delete(v1InputCandidate.executionId);
+        },
         { once: true },
       );
     }
@@ -523,9 +538,9 @@ class PortTaskEnabledSession<
           : method === "roots/list"
             ? {
                 kind: "roots",
-                ...(wire.params === undefined
-                  ? {}
-                  : { params: requestParams(wire) }),
+                ...(Object.hasOwn(wire, "params")
+                  ? { params: requestParams(wire) }
+                  : {}),
               }
             : undefined;
     if (request === undefined) return defaultServerRequestResponse(incoming);
@@ -542,7 +557,7 @@ class PortTaskEnabledSession<
       const relatedTask = (meta as Readonly<Record<string, JsonValue>>)[
         relatedTaskKey
       ];
-      if (relatedTask === undefined) evidence = "absent";
+      if (!Object.hasOwn(meta, relatedTaskKey)) evidence = "absent";
       else if (
         relatedTask === null ||
         Array.isArray(relatedTask) ||
@@ -667,9 +682,9 @@ export function withTasks<TApplicationContext = void>(
     throw new TypeError("withTasks(Client) requires options.endpointId");
   const port = new ClientSessionPort(session, endpointId);
   try {
-    return new PortTaskEnabledSession(port, options, () =>
-      port[Symbol.dispose](),
-    );
+    return new PortTaskEnabledSession(port, options, () => {
+      port[Symbol.dispose]();
+    });
   } catch (error) {
     port[Symbol.dispose]();
     throw error;

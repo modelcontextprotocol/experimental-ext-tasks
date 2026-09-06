@@ -15,8 +15,10 @@ const JsonRecordSchema = z.record(z.string(), z.unknown());
 export const expectRecord = (value: unknown): Record<string, unknown> =>
   JsonRecordSchema.parse(value);
 
-export const formatJson = (value: unknown): string =>
-  JSON.stringify(value) ?? "undefined";
+export const formatJson = (value: unknown): string => {
+  const encoded: unknown = JSON.stringify(value);
+  return typeof encoded === "string" ? encoded : "undefined";
+};
 
 export const asError = (reason: unknown): Error =>
   reason instanceof Error ? reason : new Error(formatJson(reason));

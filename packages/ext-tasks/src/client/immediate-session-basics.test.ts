@@ -120,7 +120,9 @@ describe("immediate and session basics", () => {
       new Promise((_resolve, reject) => {
         options?.signal?.addEventListener(
           "abort",
-          () => reject(new DOMException("invalidated", "AbortError")),
+          () => {
+            reject(new DOMException("invalidated", "AbortError"));
+          },
           { once: true },
         );
       });

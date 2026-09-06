@@ -58,12 +58,13 @@ export async function withAbort<T>(
   throwIfAborted(signal);
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_, reject) => {
-    onAbort = () =>
+    onAbort = () => {
       reject(
         signal.reason instanceof Error
           ? signal.reason
           : new DOMException("The operation was aborted", "AbortError"),
       );
+    };
     signal.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -85,17 +86,23 @@ export function linkAbortSignals(
   const listeners: (() => void)[] = [];
   for (const signal of signals) {
     if (signal === undefined) continue;
-    const abort = (): void => controller.abort(signal.reason);
+    const abort = (): void => {
+      controller.abort(signal.reason);
+    };
     if (signal.aborted) {
       abort();
       break;
     }
     signal.addEventListener("abort", abort, { once: true });
-    listeners.push(() => signal.removeEventListener("abort", abort));
+    listeners.push(() => {
+      signal.removeEventListener("abort", abort);
+    });
   }
   return {
     signal: controller.signal,
-    abort: (reason) => controller.abort(reason),
+    abort: (reason) => {
+      controller.abort(reason);
+    },
     dispose: () => {
       for (const remove of listeners) remove();
     },

@@ -42,7 +42,9 @@ describe("task lifecycle and races", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           );
         });
@@ -105,7 +107,9 @@ describe("task lifecycle and races", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           );
         });
@@ -207,7 +211,9 @@ describe("task lifecycle and races", () => {
             return new Promise((_resolve, reject) => {
               options?.signal?.addEventListener(
                 "abort",
-                () => reject(asError(options.signal?.reason)),
+                () => {
+                  reject(asError(options.signal?.reason));
+                },
                 { once: true },
               );
             });
@@ -478,7 +484,9 @@ describe("task lifecycle and races", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           );
         });
@@ -518,7 +526,9 @@ describe("task lifecycle and races", () => {
         return new Promise((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           );
         });
@@ -539,8 +549,11 @@ describe("task lifecycle and races", () => {
 
   it("a terminal notification preempts an in-flight observation", async () => {
     const port = new FakePort({ generation: "v2", capabilities: {} });
-    let getStarted = false;
     let observationSignal: AbortSignal | undefined;
+    let markGetStarted = (): void => {};
+    const getStarted = new Promise<void>((resolve) => {
+      markGetStarted = resolve;
+    });
     port.dispatchHandler = async (request, options) => {
       const record = expectRecord(request);
       if (record.method === "tools/call")
@@ -557,20 +570,22 @@ describe("task lifecycle and races", () => {
           }),
         };
       if (record.method === "tasks/get") {
-        getStarted = true;
         const signal = options?.signal;
         if (signal === undefined)
           throw new Error("observation signal is required");
         observationSignal = signal;
-        return new Promise((_resolve, reject) =>
+        return new Promise((_resolve, reject) => {
           signal.addEventListener(
             "abort",
-            () => reject(asError(signal.reason)),
+            () => {
+              reject(asError(signal.reason));
+            },
             {
               once: true,
             },
-          ),
-        );
+          );
+          markGetStarted();
+        });
       }
       if (record.method === "tasks/cancel")
         return { kind: "result", result: { resultType: "complete" } };
@@ -582,7 +597,7 @@ describe("task lifecycle and races", () => {
       },
     });
     const execution = await session.callTool("x");
-    while (!getStarted) await new Promise((resolve) => setTimeout(resolve, 1));
+    await getStarted;
     port.notify(
       asJson({
         jsonrpc: "2.0",
@@ -628,7 +643,9 @@ describe("task lifecycle and races", () => {
         return new Promise((_resolve, reject) =>
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           ),
         );

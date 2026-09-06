@@ -27,7 +27,7 @@ export function taskId(value: string): TaskId {
  * sparse arrays, non-plain objects, and cyclic references.
  */
 export function isJsonValue(value: unknown): value is JsonValue {
-  const visiting = new WeakSet<object>();
+  const visiting = new WeakSet();
   const visit = (candidate: unknown): boolean => {
     if (
       candidate === null ||

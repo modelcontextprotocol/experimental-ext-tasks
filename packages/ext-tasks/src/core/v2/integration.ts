@@ -1,4 +1,5 @@
 /** MCP Tasks V2 guards, capability integration, and subscription helpers. */
+import type { z } from "zod/v4";
 import { type JsonValue } from "../index.js";
 import {
   CreateTaskResultV2Schema,
@@ -21,10 +22,7 @@ import {
   type UpdateTaskRequestV2,
   type CancelTaskRequestV2,
 } from "./schemas.js";
-function parsed<T>(
-  schema: { safeParse(value: unknown): { success: boolean } },
-  value: unknown,
-): value is T {
+function parsed<T>(schema: z.ZodType<T>, value: unknown): value is T {
   return schema.safeParse(value).success;
 }
 export const isTaskV2: (value: unknown) => value is TaskV2 = (
@@ -125,11 +123,11 @@ export function withTaskCapabilityV2<
   T extends Readonly<Record<string, JsonValue>>,
 >(params: T): T & Readonly<Record<string, JsonValue>> {
   const wireMeta = params._meta;
-  const base =
+  const base: Readonly<Record<string, JsonValue>> =
     wireMeta !== null &&
     typeof wireMeta === "object" &&
     !Array.isArray(wireMeta)
-      ? wireMeta
+      ? (wireMeta as Readonly<Record<string, JsonValue>>)
       : {};
   const capability = { extensions: { [TASKS_EXTENSION_ID_V2]: {} } };
   return {

@@ -18,9 +18,23 @@ const JsonObjectSchema = z.custom<Readonly<Record<string, JsonValue>>>(
 const MetaSchema = JsonObjectSchema;
 const openObject = <T extends z.ZodRawShape>(shape: T) => {
   const validator = z.object(shape).catchall(JsonValueSchema);
+  const declaredKeys = new Set(Object.keys(shape));
   return z.unknown().transform((value, context) => {
     const parsed = validator.safeParse(value);
-    if (parsed.success) return parsed.data;
+    if (parsed.success) {
+      const data = parsed.data;
+      const source = value as Readonly<Record<string, JsonValue>>;
+      for (const key of Object.keys(source)) {
+        if (declaredKeys.has(key)) continue;
+        Object.defineProperty(data, key, {
+          configurable: true,
+          enumerable: true,
+          value: source[key],
+          writable: true,
+        });
+      }
+      return data;
+    }
     for (const issue of parsed.error.issues)
       context.addIssue({
         code: "custom",

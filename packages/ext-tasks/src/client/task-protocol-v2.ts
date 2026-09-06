@@ -192,7 +192,7 @@ async function acquireInputs<TApplicationContext>(
     }
     acquiredInputs.set(inputKey, signature);
     const request: InputRequestV2 = inputRequest;
-    const projected: ApplicationInputRequest | undefined =
+    const projected: ApplicationInputRequest =
       request.method === "sampling/createMessage"
         ? { kind: "sampling", params: request.params }
         : request.method === "roots/list"
@@ -202,15 +202,7 @@ async function acquireInputs<TApplicationContext>(
                 ? {}
                 : { params: request.params }),
             }
-          : request.method === "elicitation/create"
-            ? { kind: "elicitation", params: request.params }
-            : undefined;
-    if (projected === undefined) {
-      options.reportError(
-        new Error(`Unknown V2 task input method for key ${inputKey}`),
-      );
-      continue;
-    }
+          : { kind: "elicitation", params: request.params };
     let result: unknown;
     if (options.onInputRequest === undefined) {
       if (request.method !== "elicitation/create") continue;

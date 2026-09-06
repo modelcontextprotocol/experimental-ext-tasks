@@ -43,7 +43,6 @@ function clientTaskCapabilities(
     const extension =
       capabilities?.extensions?.["io.modelcontextprotocol/tasks"];
     if (
-      extension !== null &&
       typeof extension === "object" &&
       !Array.isArray(extension) &&
       Object.keys(extension).length === 0
@@ -67,7 +66,7 @@ function asClientRequest(request: JsonValue): {
   if (typeof method !== "string")
     throw new DispatchError("MCP request method must be a string");
   const params = request.params;
-  if (params === undefined) return { method };
+  if (!Object.hasOwn(request, "params")) return { method };
   if (!isJsonRecord(params))
     throw new DispatchError("MCP request params must be a JSON object");
   return { method, params };
@@ -91,7 +90,7 @@ type ClientPublicSurface = Pick<
   | "onclose"
 >;
 
-const adaptedClients = new WeakSet<object>();
+const adaptedClients = new WeakSet();
 
 /** Returns whether a value implements the connected MCP session port contract. */
 export function isConnectedMcpSessionPort(

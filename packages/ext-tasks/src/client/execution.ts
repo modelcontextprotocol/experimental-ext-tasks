@@ -96,12 +96,16 @@ export class TaskExecution<
       this.inputController.abort();
     this.lastAcceptedBytes = deterministicJson(initialSnapshot);
     if (lifecycleSignal !== undefined) {
-      const abort = (): void => this.controller.abort(lifecycleSignal.reason);
+      const abort = (): void => {
+        this.controller.abort(lifecycleSignal.reason);
+      };
       if (lifecycleSignal.aborted) abort();
       else lifecycleSignal.addEventListener("abort", abort, { once: true });
     }
     this.resultPromise = driver(
-      (snapshot) => this.accept(snapshot),
+      (snapshot) => {
+        this.accept(snapshot);
+      },
       (afterSequence, delayMs) => this.waitForTurn(afterSequence, delayMs),
       (afterSequence, observation) =>
         this.observeOrNotification(afterSequence, observation),
@@ -147,7 +151,7 @@ export class TaskExecution<
   private async *iterateUpdates(
     signal?: AbortSignal,
   ): AsyncIterable<TaskSnapshot> {
-    while (true) {
+    for (;;) {
       throwIfAborted(signal);
       if (this.initialSnapshot !== undefined) {
         const snapshot = this.initialSnapshot;
@@ -168,13 +172,7 @@ export class TaskExecution<
         continue;
       }
       const settled = await this.waitForUpdateOrResult(signal);
-      if (
-        !settled &&
-        this.initialSnapshot === undefined &&
-        this.pendingSnapshot === undefined &&
-        this.terminalSnapshot === undefined
-      )
-        return;
+      if (!settled) return;
     }
   }
 
@@ -204,7 +202,9 @@ export class TaskExecution<
       return true;
     let wake: (() => void) | undefined;
     const updated = new Promise<true>((resolve) => {
-      wake = () => resolve(true);
+      wake = () => {
+        resolve(true);
+      };
       this.updateWaiters.add(wake);
     });
     try {
@@ -255,8 +255,12 @@ export class TaskExecution<
         if (error === undefined) resolve();
         else reject(reasonAsError(error));
       };
-      const onNotification = (): void => finish();
-      const onAbort = (): void => finish(this.controller.signal.reason);
+      const onNotification = (): void => {
+        finish();
+      };
+      const onAbort = (): void => {
+        finish(this.controller.signal.reason);
+      };
       const timeout = setTimeout(onNotification, Math.max(0, delayMs));
       this.notificationWaiters.add(onNotification);
       this.controller.signal.addEventListener("abort", onAbort, { once: true });
@@ -275,7 +279,9 @@ export class TaskExecution<
     void observationPromise.catch(() => {});
     let wake: (() => void) | undefined;
     const notified = new Promise<TaskTurn>((resolve) => {
-      wake = () => resolve(this.currentTurn(afterSequence));
+      wake = () => {
+        resolve(this.currentTurn(afterSequence));
+      };
       this.notificationWaiters.add(wake);
     });
     try {
@@ -335,10 +341,15 @@ export class TaskExecution<
 
 /** Produces stable JSON-like text by sorting object keys recursively. */
 export function deterministicJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const encoded = JSON.stringify(value);
-    return encoded ?? `[${typeof value}]`;
+  if (value === null) return "null";
+  if (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    return JSON.stringify(value);
   }
+  if (typeof value !== "object") return `[${typeof value}]`;
   if (Array.isArray(value))
     return `[${value.map(deterministicJson).join(",")}]`;
   const record = value as Readonly<Record<string, unknown>>;

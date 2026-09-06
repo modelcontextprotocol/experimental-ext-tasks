@@ -418,7 +418,9 @@ describe("V2 input and task behavior", () => {
         return new Promise<never>((_resolve, reject) =>
           context.signal?.addEventListener(
             "abort",
-            () => reject(asError(context.signal?.reason)),
+            () => {
+              reject(asError(context.signal?.reason));
+            },
             { once: true },
           ),
         );

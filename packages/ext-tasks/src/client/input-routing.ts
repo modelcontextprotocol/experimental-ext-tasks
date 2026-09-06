@@ -5,7 +5,7 @@ import type { IncomingServerRequest, JsonRpcResponse } from "./port.js";
 export function requestParams(
   request: Readonly<Record<string, JsonValue>>,
 ): Readonly<Record<string, JsonValue>> {
-  if (request.params === undefined) return {};
+  if (!Object.hasOwn(request, "params")) return {};
   if (
     request.params === null ||
     Array.isArray(request.params) ||
@@ -39,7 +39,7 @@ let nextExecutionId = 0;
 
 /** Allocates a process-local identifier for an ordinary tool execution. */
 export function nextExecutionIdentifier(): string {
-  return `execution-${++nextExecutionId}`;
+  return `execution-${String(++nextExecutionId)}`;
 }
 
 /** Returns the conservative fallback response for an unhandled server request. */

@@ -210,7 +210,9 @@ describe("V1 input and task behavior", () => {
               return new Promise((_resolve, reject) =>
                 options?.signal?.addEventListener(
                   "abort",
-                  () => reject(asError(options.signal?.reason)),
+                  () => {
+                    reject(asError(options.signal?.reason));
+                  },
                   { once: true },
                 ),
               );
@@ -257,7 +259,7 @@ describe("V1 input and task behavior", () => {
           const executions = await Promise.all(
             Array.from({ length: candidateCount }, (_, index) =>
               session.callTool(String(index), undefined, {
-                applicationContext: `context-${index}`,
+                applicationContext: `context-${String(index)}`,
               }),
             ),
           );
@@ -407,7 +409,9 @@ describe("V1 input and task behavior", () => {
         return new Promise((_resolve, reject) =>
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           ),
         );
@@ -666,7 +670,9 @@ describe("V1 input and task behavior", () => {
         return new Promise((_resolve, reject) =>
           options?.signal?.addEventListener(
             "abort",
-            () => reject(asError(options.signal?.reason)),
+            () => {
+              reject(asError(options.signal?.reason));
+            },
             { once: true },
           ),
         );

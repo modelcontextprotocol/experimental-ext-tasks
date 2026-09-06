@@ -170,9 +170,9 @@ describe("Client adapter", () => {
       invalidations.push(reason),
     );
     await expect(
-      installedRequest?.({ jsonrpc: "2.0", id: 1, method: "other" }, context),
+      installedRequest({ jsonrpc: "2.0", id: 1, method: "other" }, context),
     ).resolves.toEqual({ prior: true });
-    await installedNotification?.({
+    await installedNotification({
       method: "custom/notification",
       params: { value: 1 },
     });
@@ -181,12 +181,12 @@ describe("Client adapter", () => {
       { method: "custom/notification", params: { value: 1 } },
     ]);
     removeNotification();
-    await installedNotification?.({
+    await installedNotification({
       method: "custom/notification",
       params: { value: 2 },
     });
     expect(notifications).toHaveLength(1);
-    installedClose?.();
+    installedClose();
     expect(priorClose).toHaveBeenCalledOnce();
     expect(port.invalidated).toBe(true);
     expect(invalidations).toHaveLength(1);
@@ -258,7 +258,7 @@ describe("Client adapter", () => {
       expect.any(Object),
     );
     await expect(
-      sdk.fallbackRequestHandler?.(
+      sdk.fallbackRequestHandler(
         { jsonrpc: "2.0", id: 9, method: "custom/unrelated" },
         context,
       ),

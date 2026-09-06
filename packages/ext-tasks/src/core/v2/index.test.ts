@@ -73,8 +73,9 @@ describe("V2 runtime wire contracts", () => {
           "ttlMs",
         ),
         (task, key) => {
-          const invalid = { ...task };
-          delete invalid[key];
+          const invalid = Object.fromEntries(
+            Object.entries(task).filter(([candidate]) => candidate !== key),
+          );
           expect(TaskV2Schema.safeParse(asJson(invalid)).success).toBe(false);
         },
       ),

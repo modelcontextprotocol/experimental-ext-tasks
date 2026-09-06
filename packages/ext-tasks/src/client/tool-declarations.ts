@@ -6,8 +6,8 @@ import { JsonRpcResponseError, type ToolDeclarationProvider } from "./api.js";
 import type { ConnectedMcpSessionPort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
 
-const ToolV1Parser = ToolV1Schema as unknown as z.ZodType<unknown>;
-const ToolV2Parser = ToolV2Schema as unknown as z.ZodType<unknown>;
+const ToolV1Parser = ToolV1Schema as unknown as z.ZodType;
+const ToolV2Parser = ToolV2Schema as unknown as z.ZodType;
 
 export class ManagedToolDeclarations implements ToolDeclarationProvider {
   private tools = new Map<string, ToolV1 | ToolV2>();
@@ -48,12 +48,13 @@ export class ManagedToolDeclarations implements ToolDeclarationProvider {
     if (signal === undefined) return waiting;
     let onAbort: (() => void) | undefined;
     const aborted = new Promise<never>((_, reject) => {
-      onAbort = () =>
+      onAbort = () => {
         reject(
           signal.reason instanceof Error
             ? signal.reason
             : new DOMException("The operation was aborted", "AbortError"),
         );
+      };
       signal.addEventListener("abort", onAbort, { once: true });
     });
     try {

@@ -223,7 +223,9 @@ describe("declarations and capabilities", () => {
       new Promise((_resolve, reject) => {
         options?.signal?.addEventListener(
           "abort",
-          () => reject(new DOMException("discovery aborted", "AbortError")),
+          () => {
+            reject(new DOMException("discovery aborted", "AbortError"));
+          },
           { once: true },
         );
       });
@@ -244,7 +246,9 @@ describe("declarations and capabilities", () => {
         refreshSignal = options?.signal;
         options?.signal?.addEventListener(
           "abort",
-          () => reject(new DOMException("closed", "AbortError")),
+          () => {
+            reject(new DOMException("closed", "AbortError"));
+          },
           { once: true },
         );
       });
