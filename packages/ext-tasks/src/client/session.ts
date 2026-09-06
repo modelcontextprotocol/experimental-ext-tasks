@@ -396,28 +396,34 @@ class PortTaskEnabledSession<
     }
   }
 
+  private lateTaskCancellationParams(
+    result: JsonValue,
+    generation: SessionTaskCapabilities["generation"],
+    callAsTaskV1: boolean,
+  ): JsonValue | undefined {
+    if (generation === "v1" && callAsTaskV1) {
+      const parsed = CreateTaskResultV1Schema.safeParse(result);
+      if (!parsed.success) return undefined;
+      return { taskId: parsed.data.task.taskId as TaskId };
+    }
+    if (generation !== "v2" || !isCreateTaskResultV2(result)) return undefined;
+    const parsed = CreateTaskResultV2Schema.safeParse(result);
+    if (!parsed.success) return undefined;
+    return withTaskCapabilityV2({ taskId: parsed.data.taskId as TaskId });
+  }
+
   private cleanupLateTaskCreation(
     response: JsonRpcResponse,
     generation: SessionTaskCapabilities["generation"],
     callAsTaskV1: boolean,
   ): void {
     if (response.kind !== "result") return;
-    let taskId: TaskId | undefined;
-    let params: JsonValue | undefined;
-    if (generation === "v1" && callAsTaskV1) {
-      const parsed = CreateTaskResultV1Schema.safeParse(response.result);
-      if (parsed.success) {
-        taskId = parsed.data.task.taskId as TaskId;
-        params = { taskId };
-      }
-    } else if (generation === "v2" && isCreateTaskResultV2(response.result)) {
-      const parsed = CreateTaskResultV2Schema.safeParse(response.result);
-      if (parsed.success) {
-        taskId = parsed.data.taskId as TaskId;
-        params = withTaskCapabilityV2({ taskId });
-      }
-    }
-    if (taskId === undefined || params === undefined) return;
+    const params = this.lateTaskCancellationParams(
+      response.result,
+      generation,
+      callAsTaskV1,
+    );
+    if (params === undefined) return;
     void dispatchWithRetry(
       this.port,
       { method: "tasks/cancel", params },

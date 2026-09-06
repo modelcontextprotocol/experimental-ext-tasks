@@ -123,6 +123,17 @@ export function readRelatedTaskEvidence(
   };
 }
 
+function correlationFailureReason(
+  evidence: RelatedTaskEvidence,
+  matchCount: number,
+): InputCorrelationFailureReason | undefined {
+  if (evidence.kind === "invalid") return "invalid-evidence";
+  if (matchCount > 1) return "ambiguous-matches";
+  if (matchCount === 0)
+    return evidence.kind === "absent" ? "missing-evidence" : "zero-matches";
+  return undefined;
+}
+
 /** Resolves the unique input candidate while preserving correlation diagnostics. */
 export function resolveInputCandidate<TApplicationContext>(
   evidence: RelatedTaskEvidence,
@@ -135,12 +146,7 @@ export function resolveInputCandidate<TApplicationContext>(
           (candidate) => candidate.taskId === evidence.taskId,
         )
       : [...ordinaryCandidates, ...taskCandidates];
-  let reason: InputCorrelationFailureReason | undefined;
-  if (evidence.kind === "invalid") reason = "invalid-evidence";
-  else if (matches.length > 1) reason = "ambiguous-matches";
-  else if (matches.length === 0) {
-    reason = evidence.kind === "absent" ? "missing-evidence" : "zero-matches";
-  }
+  const reason = correlationFailureReason(evidence, matches.length);
   if (reason !== undefined) {
     return {
       kind: "failed",

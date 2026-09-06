@@ -22,6 +22,17 @@ export function taskId(value: string): TaskId {
   return value as TaskId;
 }
 
+function isJsonObject(
+  candidate: object,
+  visit: (value: unknown) => boolean,
+): boolean {
+  const prototype = Reflect.getPrototypeOf(candidate);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Object.values(candidate).every(visit)
+  );
+}
+
 /**
  * Checks recursively whether a value is JSON-compatible, rejecting non-finite numbers,
  * sparse arrays, non-plain objects, and cyclic references.
@@ -39,17 +50,10 @@ export function isJsonValue(value: unknown): value is JsonValue {
     if (typeof candidate !== "object") return false;
     if (visiting.has(candidate)) return false;
     visiting.add(candidate);
-    let valid: boolean;
-    if (Array.isArray(candidate)) {
-      valid =
-        candidate.length === Object.keys(candidate).length &&
-        candidate.every(visit);
-    } else {
-      const prototype = Reflect.getPrototypeOf(candidate);
-      valid =
-        (prototype === Object.prototype || prototype === null) &&
-        Object.values(candidate).every(visit);
-    }
+    const valid = Array.isArray(candidate)
+      ? candidate.length === Object.keys(candidate).length &&
+        candidate.every(visit)
+      : isJsonObject(candidate, visit);
     visiting.delete(candidate);
     return valid;
   };

@@ -264,6 +264,43 @@ function responseSchemaForInputRequest(
   return ElicitResultV2Schema;
 }
 
+type InputHandlerOutcome =
+  | { readonly kind: "result"; readonly value: unknown }
+  | { readonly kind: "skipped" };
+
+async function invokeInputHandler<TApplicationContext>(args: {
+  readonly task: DetailedTaskV2;
+  readonly inputKey: string;
+  readonly request: InputRequestV2;
+  readonly inputContext: V2InputContext<TApplicationContext>;
+}): Promise<InputHandlerOutcome> {
+  const { task, inputKey, request, inputContext } = args;
+  if (inputContext.onInputRequest === undefined)
+    return request.method === "elicitation/create"
+      ? { kind: "result", value: { action: "cancel" } }
+      : { kind: "skipped" };
+  try {
+    return {
+      kind: "result",
+      value: await inputContext.onInputRequest(projectInputRequest(request), {
+        lifetime: "task-v2",
+        taskId: task.taskId,
+        inputKey,
+        applicationContext: inputContext.applicationContext,
+        signal: inputContext.inputSignal,
+      }),
+    };
+  } catch (error) {
+    if (inputContext.inputSignal.aborted) return { kind: "skipped" };
+    inputContext.reportError(
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    return request.method === "elicitation/create"
+      ? { kind: "result", value: { action: "cancel" } }
+      : { kind: "skipped" };
+  }
+}
+
 async function resolveInputRequest<TApplicationContext>(args: {
   readonly task: DetailedTaskV2;
   readonly inputKey: string;
@@ -283,35 +320,20 @@ async function resolveInputRequest<TApplicationContext>(args: {
     return undefined;
   }
 
-  let result: unknown;
-  if (inputContext.onInputRequest === undefined) {
-    if (request.method !== "elicitation/create") return undefined;
-    result = { action: "cancel" };
-  } else {
-    try {
-      result = await inputContext.onInputRequest(projectInputRequest(request), {
-        lifetime: "task-v2",
-        taskId: task.taskId,
-        inputKey,
-        applicationContext: inputContext.applicationContext,
-        signal: inputContext.inputSignal,
-      });
-    } catch (error) {
-      if (inputContext.inputSignal.aborted) return undefined;
-      inputContext.reportError(
-        error instanceof Error ? error : new Error(String(error)),
-      );
-      if (request.method !== "elicitation/create") return undefined;
-      result = { action: "cancel" };
-    }
-  }
+  const outcome = await invokeInputHandler({
+    task,
+    inputKey,
+    request,
+    inputContext,
+  });
+  if (outcome.kind === "skipped") return undefined;
 
   try {
     return {
       inputKey,
       response: parseResult(
         responseSchemaForInputRequest(request),
-        result as JsonValue,
+        outcome.value as JsonValue,
       ),
     };
   } catch (error) {
