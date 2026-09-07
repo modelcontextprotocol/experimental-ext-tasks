@@ -1,4 +1,3 @@
-import * as z from "zod/v4";
 import type { TaskV1 } from "./v1/index.js";
 import type { DetailedTaskV2, TaskV2 } from "./v2/index.js";
 
@@ -12,6 +11,21 @@ export type JsonValue =
   | string
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
+
+export class ProtocolDecodeError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ProtocolDecodeError";
+  }
+}
+
+export type RuntimeDecodeResult<T> =
+  | { readonly success: true; readonly value: T }
+  | { readonly success: false; readonly error: ProtocolDecodeError };
+
+export interface RuntimeCodec<T> {
+  parse(value: JsonValue): RuntimeDecodeResult<T>;
+}
 
 export type TaskSnapshot =
   | { readonly generation: "v1"; readonly task: TaskV1 }
@@ -60,8 +74,14 @@ export function isJsonValue(value: unknown): value is JsonValue {
   return visit(value);
 }
 
-/** Validates the package's recursive JSON data model. */
-export const JsonValueSchema: z.ZodType<JsonValue> = z.custom<JsonValue>(
-  isJsonValue,
-  "Expected a JSON value",
-);
+/** Validates the package's recursive JSON data model without a schema-library dependency. */
+export const JsonValueCodec: RuntimeCodec<JsonValue> = {
+  parse(value) {
+    return isJsonValue(value)
+      ? { success: true, value }
+      : {
+          success: false,
+          error: new ProtocolDecodeError("Expected a JSON value"),
+        };
+  },
+};

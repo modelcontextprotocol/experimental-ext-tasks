@@ -1,8 +1,13 @@
 /** MCP Tasks V1 runtime schemas and schema-derived wire types. */
 import * as z from "zod/v4";
 
-import { JsonValueSchema } from "../index.js";
+import { isJsonValue } from "../index.js";
+import type { JsonValue } from "../index.js";
 
+const JsonValueSchema: z.ZodType<JsonValue> = z.custom<JsonValue>(
+  isJsonValue,
+  "Expected a JSON value",
+);
 const JsonRecordSchema = z.record(z.string(), JsonValueSchema);
 const ObjectJsonSchema = z
   .object({ type: z.literal("object") })

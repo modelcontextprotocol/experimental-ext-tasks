@@ -1,10 +1,11 @@
-import { type JsonValue } from "../../src/core/index.js";
+import type { JsonValue } from "../../src/core/index.js";
 import { z } from "zod/v4";
-import {
-  type ConnectedMcpSessionPort,
-  type IncomingServerRequest,
-  type JsonRpcResponse,
-  type SessionTaskCapabilities,
+import type {
+  ConnectedMcpSessionPort,
+  DispatchOptions,
+  IncomingServerRequest,
+  JsonRpcResponse,
+  SessionTaskCapabilities,
 } from "../../src/client/index.js";
 
 export const asJson = (value: unknown): JsonValue =>
@@ -26,12 +27,13 @@ export const asError = (reason: unknown): Error =>
 export class FakePort implements ConnectedMcpSessionPort {
   readonly endpointId: string;
   readonly requests: JsonValue[] = [];
+  readonly dispatchOptions: (DispatchOptions | undefined)[] = [];
   readonly taskCapabilities: SessionTaskCapabilities;
   invalidated = false;
   response: JsonRpcResponse = { kind: "result", result: { content: [] } };
   dispatchHandler?: (
     request: JsonValue,
-    options?: { readonly signal?: AbortSignal },
+    options?: DispatchOptions,
   ) => Promise<JsonRpcResponse>;
   private requestHandler?: (
     incoming: IncomingServerRequest,
@@ -50,9 +52,10 @@ export class FakePort implements ConnectedMcpSessionPort {
 
   async dispatch(
     request: JsonValue,
-    options?: { readonly signal?: AbortSignal },
+    options?: DispatchOptions,
   ): Promise<JsonRpcResponse> {
     this.requests.push(request);
+    this.dispatchOptions.push(options);
     return this.dispatchHandler === undefined
       ? this.response
       : this.dispatchHandler(request, options);

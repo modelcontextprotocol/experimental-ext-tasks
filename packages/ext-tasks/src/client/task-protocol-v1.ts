@@ -1,36 +1,40 @@
 /** Generation-specific requester-side V1 task execution. */
 
-import type { z } from "zod/v4";
+import type { RuntimeCodec } from "../core/index.js";
 import {
   CancelTaskResultV1Schema,
   GetTaskResultV1Schema,
   TaskResultV1Schema,
-  type TaskV1,
 } from "../core/v1/index.js";
-import { TaskCancellationUnsupportedError, type TaskHandle } from "./api.js";
+import type { TaskV1 } from "../core/v1/index.js";
+import { TaskCancellationUnsupportedError } from "./api.js";
+import type { TaskHandle } from "./api.js";
 import {
   DEFAULT_TASK_POLL_INTERVAL_MS,
   TaskExecution,
   terminalStatus,
 } from "./execution.js";
-import {
-  parseResult,
-  dispatchWithRetry,
-  responseResult,
-  type ConnectedMcpSessionPort,
-} from "./port.js";
+import { parseResult, dispatchWithRetry, responseResult } from "./port.js";
+import type { ConnectedMcpSessionPort, DispatchContext } from "./port.js";
 
 /** Creates an execution controller for an existing V1 task. */
 export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
   readonly applicationContext: TApplicationContext;
   readonly handle: TaskHandle & { readonly generation: "v1" };
   readonly initialTask: TaskV1;
-  readonly resultSchema: z.ZodType<TResult>;
+  readonly resultCodec: RuntimeCodec<TResult>;
   readonly port: ConnectedMcpSessionPort;
+  readonly dispatchContext?: DispatchContext;
   readonly lifecycleSignal: AbortSignal;
 }): TaskExecution<TResult, TApplicationContext> {
-  const { applicationContext, handle, initialTask, resultSchema, port } =
-    options;
+  const {
+    applicationContext,
+    dispatchContext,
+    handle,
+    initialTask,
+    resultCodec,
+    port,
+  } = options;
   return new TaskExecution({
     applicationContext,
     handle,
@@ -50,7 +54,7 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
             dispatchWithRetry(
               port,
               { method: "tasks/get", params: { taskId: handle.taskId } },
-              observationSignal,
+              { signal: observationSignal, context: dispatchContext },
               "observe",
             ).then((response) => ({
               generation: "v1" as const,
@@ -80,12 +84,12 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
         await dispatchWithRetry(
           port,
           { method: "tasks/result", params: { taskId: handle.taskId } },
-          context.signal,
+          { signal: context.signal, context: dispatchContext },
           "observe",
         ),
       );
       parseResult(TaskResultV1Schema, taskResult);
-      return parseResult(resultSchema, taskResult);
+      return parseResult(resultCodec, taskResult);
     },
     cancelTask: async (signal) => {
       const capabilities = port.taskCapabilities;
@@ -103,7 +107,7 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
               method: "tasks/cancel",
               params: { taskId: handle.taskId },
             },
-            signal,
+            { signal, context: dispatchContext },
             "mutate",
           ),
         ),

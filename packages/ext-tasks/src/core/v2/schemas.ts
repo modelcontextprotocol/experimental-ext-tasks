@@ -1,8 +1,13 @@
 /** MCP Tasks V2 Zod schemas and schema-inferred wire declarations. */
 import { z } from "zod/v4";
 
-import { JsonValueSchema, isJsonValue, type JsonValue } from "../index.js";
+import { isJsonValue } from "../index.js";
+import type { JsonValue } from "../index.js";
 
+const JsonValueSchema: z.ZodType<JsonValue> = z.custom<JsonValue>(
+  isJsonValue,
+  "Expected a JSON value",
+);
 export const TASKS_EXTENSION_ID_V2 = "io.modelcontextprotocol/tasks" as const;
 export const CLIENT_CAPABILITIES_META_KEY_V2 =
   "io.modelcontextprotocol/clientCapabilities" as const;

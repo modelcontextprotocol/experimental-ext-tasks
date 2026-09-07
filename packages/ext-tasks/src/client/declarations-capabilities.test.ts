@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { type ToolV1 } from "../core/v1/index.js";
-import { DispatchError, withTasks, type JsonRpcResponse } from "./index.js";
+import type { ToolV1 } from "../core/v1/index.js";
+import { DispatchError, toolDeclarationV1, withTasks } from "./index.js";
+import type { JsonRpcResponse } from "./index.js";
 import {
   FakePort,
   asJson,
@@ -186,8 +187,7 @@ describe("declarations and capabilities", () => {
     await session.close();
   });
 
-  it("reports duplicate tools and aborts managed discovery on close", async () => {
-    const errors: Error[] = [];
+  it("rejects duplicate tools deterministically and aborts managed discovery on close", async () => {
     const duplicatePort = new FakePort({ generation: "v1", capabilities: {} });
     duplicatePort.dispatchHandler = async (request) => {
       await Promise.resolve();
@@ -209,13 +209,15 @@ describe("declarations and capabilities", () => {
       }
       return { kind: "result", result: asJson({ content: [] }) };
     };
-    const duplicateSession = withTasks(duplicatePort, {
-      onError: (error) => errors.push(error),
-    });
-    await duplicateSession.callTool("duplicate");
-    expect(errors.map((error) => error.message)).toContain(
+    const duplicateSession = withTasks(duplicatePort);
+    await expect(duplicateSession.callTool("duplicate")).rejects.toThrow(
       "Duplicate tool declaration: duplicate",
     );
+    expect(
+      duplicatePort.requests.every(
+        (request) => expectRecord(request).method === "tools/list",
+      ),
+    ).toBe(true);
     await duplicateSession.close();
 
     const callAbortPort = new FakePort();
@@ -286,7 +288,9 @@ describe("declarations and capabilities", () => {
       callController.signal,
       "removeEventListener",
     );
-    const session = withTasks(port, { tools: { currentTool: () => v1Tool } });
+    const session = withTasks(port, {
+      tools: { currentTool: () => toolDeclarationV1(v1Tool) },
+    });
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await expect(
         session.callTool("x", undefined, { signal: callController.signal }),

@@ -1,15 +1,13 @@
-import {
-  Client,
-  ProtocolError,
-  type StandardSchemaV1,
-} from "@modelcontextprotocol/client";
-import { isJsonValue, type JsonValue } from "../core/index.js";
-import type { SessionTaskCapabilities } from "./port.js";
-import {
-  DispatchError,
-  type ConnectedMcpSessionPort,
-  type IncomingServerRequest,
-  type JsonRpcResponse,
+import { Client, ProtocolError } from "@modelcontextprotocol/client";
+import type { StandardSchemaV1 } from "@modelcontextprotocol/client";
+import { isJsonValue } from "../core/index.js";
+import type { JsonValue } from "../core/index.js";
+import type { DispatchOptions, SessionTaskCapabilities } from "./port.js";
+import { DispatchError } from "./port.js";
+import type {
+  ConnectedMcpSessionPort,
+  IncomingServerRequest,
+  JsonRpcResponse,
 } from "./port.js";
 
 const jsonValueSchema: StandardSchemaV1<JsonValue, JsonValue> = {
@@ -78,6 +76,26 @@ function isTaskInputMethod(method: string): boolean {
     method === "sampling/createMessage" ||
     method === "roots/list"
   );
+}
+
+/** Host-owned request coordinator used when SDK wire codecs reject V2 task traffic. */
+export type RawClientDispatch = (
+  request: JsonValue,
+  options?: DispatchOptions,
+) => Promise<JsonRpcResponse>;
+
+/** Options for adapting an SDK Client. */
+export interface ClientSessionPortOptions {
+  readonly rawDispatch?: RawClientDispatch;
+}
+
+function requiresRawDispatch(
+  capabilities: SessionTaskCapabilities,
+  request: JsonValue,
+): boolean {
+  if (capabilities.generation !== "v2") return false;
+  const method = asClientRequest(request).method;
+  return method === "tools/call" || method.startsWith("tasks/");
 }
 
 type ClientPublicSurface = Pick<
@@ -188,16 +206,21 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
   constructor(
     private readonly client: ClientPublicSurface,
     readonly endpointId: string,
+    private readonly rawDispatch?: RawClientDispatch,
   ) {
     if (adaptedClients.has(client))
       throw new TypeError(
         "An ext-tasks adapter is already active for this Client",
       );
+    this.taskCapabilities = clientTaskCapabilities(client);
+    if (this.taskCapabilities.generation === "v2" && rawDispatch === undefined)
+      throw new TypeError(
+        "SDK Client cannot safely coordinate V2 task wire shapes; createSessionPortFromClient requires options.rawDispatch for a V2 session",
+      );
     this.previousFallbackRequestHandler = client.fallbackRequestHandler;
     this.previousFallbackNotificationHandler =
       client.fallbackNotificationHandler;
     this.previousOnclose = client.onclose;
-    this.taskCapabilities = clientTaskCapabilities(client);
     adaptedClients.add(client);
     client.fallbackRequestHandler = this.fallbackRequestHandler;
     client.fallbackNotificationHandler = this.fallbackNotificationHandler;
@@ -210,13 +233,25 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
 
   async dispatch(
     request: JsonValue,
-    options: { readonly signal?: AbortSignal } = {},
+    options: DispatchOptions = {},
   ): Promise<JsonRpcResponse> {
     try {
+      if (requiresRawDispatch(this.taskCapabilities, request)) {
+        if (this.rawDispatch === undefined)
+          throw new DispatchError(
+            "SDK Client cannot dispatch V2 task wire shapes; provide rawDispatch",
+          );
+        return await this.rawDispatch(request, options);
+      }
       const result = await this.client.request(
         asClientRequest(request),
         jsonValueSchema,
-        options.signal === undefined ? {} : { signal: options.signal },
+        {
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          ...(options.context?.headers === undefined
+            ? {}
+            : { headers: options.context.headers }),
+        },
       );
       return { kind: "result", result };
     } catch (error) {
@@ -231,6 +266,7 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
           },
         };
       }
+      if (error instanceof DispatchError) throw error;
       throw new DispatchError("MCP client request failed", false, {
         cause: error,
       });
@@ -284,6 +320,7 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
 export function createSessionPortFromClient(
   client: Client,
   endpointId: string,
+  options: ClientSessionPortOptions = {},
 ): ConnectedMcpSessionPort & Disposable {
-  return new ClientSessionPort(client, endpointId);
+  return new ClientSessionPort(client, endpointId, options.rawDispatch);
 }

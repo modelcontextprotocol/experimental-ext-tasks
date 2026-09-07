@@ -1,5 +1,8 @@
-import type { TaskSnapshot } from "../core/index.js";
-import type { z } from "zod/v4";
+import {
+  ProtocolDecodeError,
+  type RuntimeCodec,
+  type TaskSnapshot,
+} from "../core/index.js";
 import {
   CallToolResultV1Schema,
   type CallToolResultV1,
@@ -20,11 +23,36 @@ import type { SessionTaskCapabilities } from "./port.js";
 import { linkAbortSignals, withAbort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
 
-/** Selects the default tool-result schema for the negotiated task generation. */
-export function defaultResultSchema(
+function codecFromSchema<T>(schema: {
+  safeParse(
+    value: unknown,
+  ):
+    | { readonly success: true; readonly data: T }
+    | { readonly success: false; readonly error: unknown };
+}): RuntimeCodec<T> {
+  return {
+    parse(value) {
+      const decoded = schema.safeParse(value);
+      return decoded.success
+        ? { success: true, value: decoded.data }
+        : {
+            success: false,
+            error: new ProtocolDecodeError(
+              "Protocol value failed schema validation",
+              { cause: decoded.error },
+            ),
+          };
+    },
+  };
+}
+
+/** Selects the default tool-result codec for the negotiated task generation. */
+export function defaultResultCodec(
   generation: SessionTaskCapabilities["generation"],
-): z.ZodType<CallToolResultV1 | CallToolResultV2> {
-  return generation === "v2" ? CallToolResultV2Schema : CallToolResultV1Schema;
+): RuntimeCodec<CallToolResultV1 | CallToolResultV2> {
+  return generation === "v2"
+    ? codecFromSchema(CallToolResultV2Schema)
+    : codecFromSchema(CallToolResultV1Schema);
 }
 
 /** Normalizes an invalidation or abort reason to an Error instance. */
@@ -102,6 +130,8 @@ export class TaskExecution<
   private latestNotifiedSnapshot: TaskSnapshot | undefined;
   private updatesAcquired = false;
   private cancelPromise: Promise<void> | undefined;
+  private closePromise: Promise<void> | undefined;
+  private settled = false;
   private closed = false;
 
   constructor(options: TaskExecutionOptions<TResult, TApplicationContext>) {
@@ -136,6 +166,14 @@ export class TaskExecution<
       },
       isClosed: () => this.closed,
     });
+    void this.resultPromise.then(
+      () => {
+        this.settled = true;
+      },
+      () => {
+        this.settled = true;
+      },
+    );
   }
 
   serializeReference(): SerializedTaskReference {
@@ -363,15 +401,17 @@ export class TaskExecution<
   }
 
   close(): Promise<void> {
-    if (!this.closed) {
-      this.closed = true;
-      this.controller.abort(this.closedError);
-      this.inputController.abort(this.closedError);
+    if (this.closePromise !== undefined) return this.closePromise;
+    const shouldCancel = !this.settled;
+    this.closed = true;
+    this.controller.abort(this.closedError);
+    this.inputController.abort(this.closedError);
+    if (shouldCancel)
       void this.cancel().catch(() => {
         // Cooperative cancellation is best effort during close.
       });
-    }
-    return Promise.resolve();
+    this.closePromise = Promise.resolve();
+    return this.closePromise;
   }
 
   [Symbol.asyncDispose](): Promise<void> {

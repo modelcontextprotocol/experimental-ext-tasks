@@ -1,42 +1,39 @@
-import { Client } from "@modelcontextprotocol/client";
-import {
-  isJsonValue,
-  type JsonValue,
-  type TaskId,
-  type TaskSnapshot,
+import { isJsonValue } from "../core/index.js";
+import type {
+  JsonValue,
+  RuntimeCodec,
+  TaskId,
+  TaskSnapshot,
 } from "../core/index.js";
-import type { z } from "zod/v4";
 import {
   CreateTaskResultV1Schema,
   GetTaskResultV1Schema,
   TaskStatusNotificationV1Schema,
   shouldCallToolAsTaskV1,
-  type CallToolResultV1,
-  type TaskV1,
-  type ToolV1,
 } from "../core/v1/index.js";
+import type { CallToolResultV1, TaskV1 } from "../core/v1/index.js";
 import {
   CreateTaskResultV2Schema,
   GetTaskResultV2Schema,
   TaskStatusNotificationV2Schema,
   isCreateTaskResultV2,
   withTaskCapabilityV2,
-  type CallToolResultV2,
-  type DetailedTaskV2,
 } from "../core/v2/index.js";
-import {
-  InputCorrelationError,
-  type SerializedTaskReference,
-  type TaskEnabledSession,
-  type TaskHandle,
-  type ToolDeclarationProvider,
-  type ToolExecution,
-  type WithTasksOptions,
+import type { CallToolResultV2, DetailedTaskV2 } from "../core/v2/index.js";
+import { InputCorrelationError, TaskRecoveryOwnershipError } from "./api.js";
+import type {
+  SerializedTaskReference,
+  TaskEnabledSession,
+  TaskHandle,
+  ToolCallOptions,
+  ToolDeclarationProvider,
+  ToolExecution,
+  WithTasksOptions,
 } from "./api.js";
 import {
   ImmediateExecution,
   TaskExecution,
-  defaultResultSchema,
+  defaultResultCodec,
   reasonAsError,
 } from "./execution.js";
 import {
@@ -47,8 +44,10 @@ import {
   readRelatedTaskEvidence,
   resolveInputCandidate,
   throwIfAborted,
-  type OrdinaryInputCandidate,
-  type V1TaskInputCandidate,
+} from "./input-routing.js";
+import type {
+  OrdinaryInputCandidate,
+  V1TaskInputCandidate,
 } from "./input-routing.js";
 import {
   parseResult,
@@ -56,19 +55,28 @@ import {
   linkAbortSignals,
   responseResult,
   withAbort,
-  type ConnectedMcpSessionPort,
-  type IncomingServerRequest,
-  type JsonRpcResponse,
-  type SessionTaskCapabilities,
 } from "./port.js";
-import {
-  ClientSessionPort,
-  isClientPublicSurface,
-  isConnectedMcpSessionPort,
-} from "./sdk-client-adapter.js";
+import type {
+  ConnectedMcpSessionPort,
+  IncomingServerRequest,
+  JsonRpcResponse,
+  SessionTaskCapabilities,
+} from "./port.js";
 import { ManagedToolDeclarations } from "./tool-declarations.js";
 import { createTaskExecutionV1 } from "./task-protocol-v1.js";
 import { createTaskExecutionV2 } from "./task-protocol-v2.js";
+
+type TaskIdentityOwner = {
+  readonly originalOperation: string;
+  readonly token: symbol;
+};
+
+function taskIdentityKey(reference: {
+  readonly generation: "v1" | "v2";
+  readonly taskId: TaskId;
+}): string {
+  return `${reference.generation}:${reference.taskId}`;
+}
 
 function isSupportedTaskReferenceOperation(reference: {
   readonly originalOperation: unknown;
@@ -76,11 +84,27 @@ function isSupportedTaskReferenceOperation(reference: {
   return reference.originalOperation === "tools/call";
 }
 
+function selectResultCodec<TResult>(
+  generation: SessionTaskCapabilities["generation"],
+  codec: RuntimeCodec<TResult> | undefined,
+): RuntimeCodec<TResult> {
+  if (codec !== undefined) return codec;
+  const fallback = defaultResultCodec(generation);
+  return {
+    parse(value) {
+      const decoded = fallback.parse(value);
+      if (!decoded.success) return decoded;
+      // TResult defaults to the generated result union; callers choosing another TResult must provide resultCodec.
+      return { success: true, value: decoded.value as TResult };
+    },
+  };
+}
+
 class PortTaskEnabledSession<
   TApplicationContext,
 > implements TaskEnabledSession<TApplicationContext> {
   private closed = false;
-  private closeError: Error | undefined;
+  private closePromise: Promise<void> | undefined;
   private readonly lifecycleController = new AbortController();
   private invalidationError: Error | undefined;
   private readonly disposeListeners: readonly (() => void)[];
@@ -97,6 +121,7 @@ class PortTaskEnabledSession<
   private readonly activeTaskExecutions = new Set<
     TaskExecution<unknown, TApplicationContext>
   >();
+  private readonly taskIdentityOwners = new Map<string, TaskIdentityOwner>();
 
   constructor(
     private readonly port: ConnectedMcpSessionPort,
@@ -156,12 +181,7 @@ class PortTaskEnabledSession<
   async callTool<TResult = CallToolResultV1 | CallToolResultV2>(
     name: string,
     params?: Readonly<Record<string, JsonValue>>,
-    options: {
-      readonly resultSchema?: z.ZodType<TResult>;
-      readonly applicationContext?: TApplicationContext;
-      readonly signal?: AbortSignal;
-      readonly preferTask?: boolean;
-    } = {},
+    options: ToolCallOptions<TResult, TApplicationContext> = {},
   ): Promise<ToolExecution<TResult, TApplicationContext>> {
     this.assertUsable();
     const callLifecycle = linkAbortSignals(
@@ -180,39 +200,41 @@ class PortTaskEnabledSession<
       throw error;
     }
     if (
-      this.port.taskCapabilities.generation === "v2" &&
       declaration !== undefined &&
-      "execution" in declaration
+      declaration.generation !== this.port.taskCapabilities.generation &&
+      this.port.taskCapabilities.generation !== "none"
     ) {
       callLifecycle.dispose();
       throw new Error(
-        "V1 tool declaration is incompatible with the V2 session",
+        `${declaration.generation.toUpperCase()} tool declaration is incompatible with the ${this.port.taskCapabilities.generation.toUpperCase()} session`,
       );
     }
     const requestParams: Record<string, JsonValue> = { name };
     if (params !== undefined) requestParams.arguments = params;
+    if (options.metadata !== undefined) requestParams._meta = options.metadata;
     const generation = this.port.taskCapabilities.generation;
     const callAsTaskV1 =
       generation === "v1" &&
-      declaration !== undefined &&
-      "execution" in declaration &&
+      declaration?.generation === "v1" &&
       shouldCallToolAsTaskV1(
         this.port.taskCapabilities.capabilities,
-        declaration as ToolV1,
+        declaration.tool,
         options.preferTask,
       );
-    if (callAsTaskV1) requestParams.task = {};
+    if (callAsTaskV1)
+      requestParams.task =
+        options.taskTtl === undefined ? {} : { ttl: options.taskTtl };
+    const dispatchContext =
+      options.headers === undefined ? undefined : { headers: options.headers };
     const executionId = nextExecutionIdentifier();
-    if (!callAsTaskV1) {
-      this.ordinaryInputCandidates.set(executionId, {
-        lifetime: "basic",
-        generation: generation === "none" ? "v1" : generation,
-        toolName: name,
-        executionId,
-        applicationContext: options.applicationContext as TApplicationContext,
-        signal: callSignal,
-      });
-    }
+    this.ordinaryInputCandidates.set(executionId, {
+      lifetime: "basic",
+      generation: generation === "none" ? "v1" : generation,
+      toolName: name,
+      executionId,
+      applicationContext: options.applicationContext as TApplicationContext,
+      signal: callSignal,
+    });
     const dispatchPromise = dispatchWithRetry(
       this.port,
       {
@@ -222,7 +244,7 @@ class PortTaskEnabledSession<
             ? withTaskCapabilityV2(requestParams)
             : requestParams,
       },
-      callSignal,
+      { signal: callSignal, context: dispatchContext },
       "mutate",
     );
     let response: JsonRpcResponse;
@@ -248,9 +270,7 @@ class PortTaskEnabledSession<
       throw error;
     }
     const wireResult = responseResult(response);
-    const schema =
-      options.resultSchema ??
-      (defaultResultSchema(generation) as z.ZodType<TResult>);
+    const codec = selectResultCodec(generation, options.resultCodec);
 
     if (generation === "v1" && callAsTaskV1) {
       const created = parseResult(CreateTaskResultV1Schema, wireResult);
@@ -259,23 +279,29 @@ class PortTaskEnabledSession<
         taskId: created.task.taskId as TaskId,
         originalOperation: "tools/call",
       };
+      const releaseTaskIdentity = this.acquireTaskIdentity(handle);
       const execution = createTaskExecutionV1({
         applicationContext: options.applicationContext as TApplicationContext,
         handle,
         initialTask: created.task,
-        resultSchema: schema,
+        resultCodec: codec,
         port: this.port,
+        dispatchContext,
         lifecycleSignal: this.lifecycleController.signal,
       });
-      return this.trackTaskExecution(execution, {
-        lifetime: "task-v1",
-        generation: "v1",
-        taskId: created.task.taskId as TaskId,
-        toolName: name,
-        executionId,
-        applicationContext: options.applicationContext as TApplicationContext,
-        signal: execution.inputSignal(),
-      });
+      return this.trackTaskExecution(
+        execution,
+        {
+          lifetime: "task-v1",
+          generation: "v1",
+          taskId: created.task.taskId as TaskId,
+          toolName: name,
+          executionId,
+          applicationContext: options.applicationContext as TApplicationContext,
+          signal: execution.inputSignal(),
+        },
+        releaseTaskIdentity,
+      );
     }
 
     if (generation === "v2" && isCreateTaskResultV2(wireResult)) {
@@ -285,23 +311,27 @@ class PortTaskEnabledSession<
         taskId: created.taskId as TaskId,
         originalOperation: "tools/call",
       };
+      const releaseTaskIdentity = this.acquireTaskIdentity(handle);
       return this.trackTaskExecution(
         createTaskExecutionV2({
           applicationContext: options.applicationContext as TApplicationContext,
           handle,
           initialTask: created,
-          resultSchema: schema,
+          resultCodec: codec,
           port: this.port,
+          dispatchContext,
           lifecycleSignal: this.lifecycleController.signal,
           onInputRequest: this.options.onInputRequest,
           reportError: (error) => {
             this.reportBackgroundError(error);
           },
         }),
+        undefined,
+        releaseTaskIdentity,
       );
     }
 
-    const resultPromise = Promise.resolve(parseResult(schema, wireResult));
+    const resultPromise = Promise.resolve(parseResult(codec, wireResult));
     return new ImmediateExecution(
       options.applicationContext as TApplicationContext,
       resultPromise,
@@ -311,7 +341,7 @@ class PortTaskEnabledSession<
   async resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
     reference: SerializedTaskReference,
     options: {
-      readonly resultSchema?: z.ZodType<TResult>;
+      readonly resultCodec?: RuntimeCodec<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
     } = {},
@@ -322,8 +352,21 @@ class PortTaskEnabledSession<
       throw new Error("Task reference belongs to a different endpoint");
     if (reference.generation !== capabilities.generation)
       throw new Error("Task reference generation does not match this session");
+    const activeTaskIdentity = this.taskIdentityOwners.get(
+      taskIdentityKey(reference),
+    );
+    if (activeTaskIdentity !== undefined) {
+      throw new TaskRecoveryOwnershipError(
+        reference.generation,
+        reference.taskId,
+        reference.originalOperation,
+        activeTaskIdentity.originalOperation,
+      );
+    }
     if (!isSupportedTaskReferenceOperation(reference))
       throw new Error("Task reference operation is not supported");
+    const releaseTaskIdentity = this.acquireTaskIdentity(reference);
+    let taskIdentityTransferred = false;
 
     const resumeLifecycle = linkAbortSignals(
       this.lifecycleController.signal,
@@ -331,9 +374,7 @@ class PortTaskEnabledSession<
     );
     const resumeSignal = resumeLifecycle.signal;
     const executionId = nextExecutionIdentifier();
-    const schema =
-      options.resultSchema ??
-      (defaultResultSchema(reference.generation) as z.ZodType<TResult>);
+    const codec = selectResultCodec(reference.generation, options.resultCodec);
     try {
       throwIfAborted(resumeSignal);
       const response = await dispatchWithRetry(
@@ -360,38 +401,51 @@ class PortTaskEnabledSession<
           applicationContext: options.applicationContext as TApplicationContext,
           handle: reference,
           initialTask: task,
-          resultSchema: schema,
+          resultCodec: codec,
           port: this.port,
           lifecycleSignal: this.lifecycleController.signal,
         });
-        return this.trackTaskExecution(execution, {
-          lifetime: "task-v1",
-          generation: "v1",
-          taskId: reference.taskId,
-          toolName: "<resumed>",
-          executionId,
-          applicationContext: options.applicationContext as TApplicationContext,
-          signal: execution.inputSignal(),
-        });
+        const tracked = this.trackTaskExecution(
+          execution,
+          {
+            lifetime: "task-v1",
+            generation: "v1",
+            taskId: reference.taskId,
+            toolName: "<resumed>",
+            executionId,
+            applicationContext:
+              options.applicationContext as TApplicationContext,
+            signal: execution.inputSignal(),
+          },
+          releaseTaskIdentity,
+        );
+        taskIdentityTransferred = true;
+        return tracked;
       }
 
       const task = parseResult(GetTaskResultV2Schema, responseResult(response));
-      return this.trackTaskExecution(
-        createTaskExecutionV2({
-          applicationContext: options.applicationContext as TApplicationContext,
-          handle: reference,
-          initialTask: task,
-          initialDetailedTask: task,
-          resultSchema: schema,
-          port: this.port,
-          lifecycleSignal: this.lifecycleController.signal,
-          onInputRequest: this.options.onInputRequest,
-          reportError: (error) => {
-            this.reportBackgroundError(error);
-          },
-        }),
+      const execution = createTaskExecutionV2({
+        applicationContext: options.applicationContext as TApplicationContext,
+        handle: reference,
+        initialTask: task,
+        initialDetailedTask: task,
+        resultCodec: codec,
+        port: this.port,
+        lifecycleSignal: this.lifecycleController.signal,
+        onInputRequest: this.options.onInputRequest,
+        reportError: (error) => {
+          this.reportBackgroundError(error);
+        },
+      });
+      const tracked = this.trackTaskExecution(
+        execution,
+        undefined,
+        releaseTaskIdentity,
       );
+      taskIdentityTransferred = true;
+      return tracked;
     } finally {
+      if (!taskIdentityTransferred) releaseTaskIdentity();
       resumeLifecycle.dispose();
     }
   }
@@ -435,11 +489,18 @@ class PortTaskEnabledSession<
   }
 
   close(): Promise<void> {
-    if (!this.closed) {
-      this.closed = true;
-      for (const execution of this.activeTaskExecutions) {
-        void execution.close().catch(() => {});
-      }
+    if (this.closePromise !== undefined) return this.closePromise;
+    this.closed = true;
+    this.closePromise = (async () => {
+      const childClosures = [...this.activeTaskExecutions].map(
+        async (execution) => {
+          try {
+            await execution.close();
+          } catch (error) {
+            this.reportBackgroundError(reasonAsError(error));
+          }
+        },
+      );
       this.lifecycleController.abort(
         new Error("Task-enabled session is closed"),
       );
@@ -447,22 +508,47 @@ class PortTaskEnabledSession<
         try {
           dispose();
         } catch (error) {
-          this.closeError ??= reasonAsError(error);
+          this.reportBackgroundError(reasonAsError(error));
         }
       }
-    }
-    return this.closeError === undefined
-      ? Promise.resolve()
-      : Promise.reject(this.closeError);
+      await Promise.all(childClosures);
+    })();
+    return this.closePromise;
   }
 
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();
   }
 
+  private acquireTaskIdentity(
+    reference: SerializedTaskReference | TaskHandle,
+  ): () => void {
+    const key = taskIdentityKey(reference);
+    const active = this.taskIdentityOwners.get(key);
+    if (active !== undefined) {
+      throw new TaskRecoveryOwnershipError(
+        reference.generation,
+        reference.taskId,
+        reference.originalOperation,
+        active.originalOperation,
+      );
+    }
+    const owner: TaskIdentityOwner = {
+      originalOperation: reference.originalOperation,
+      token: Symbol(key),
+    };
+    this.taskIdentityOwners.set(key, owner);
+    return () => {
+      if (this.taskIdentityOwners.get(key)?.token === owner.token) {
+        this.taskIdentityOwners.delete(key);
+      }
+    };
+  }
+
   private trackTaskExecution<TResult>(
     execution: TaskExecution<TResult, TApplicationContext>,
     v1InputCandidate?: V1TaskInputCandidate<TApplicationContext>,
+    releaseTaskIdentity?: () => void,
   ): TaskExecution<TResult, TApplicationContext> {
     const tracked = execution as TaskExecution<unknown, TApplicationContext>;
     this.activeTaskExecutions.add(tracked);
@@ -490,6 +576,7 @@ class PortTaskEnabledSession<
         this.activeTaskExecutions.delete(tracked);
         if (v1InputCandidate !== undefined)
           this.v1TaskInputCandidates.delete(v1InputCandidate.executionId);
+        releaseTaskIdentity?.();
       });
     return execution;
   }
@@ -577,39 +664,10 @@ class PortTaskEnabledSession<
   }
 }
 
-/** Adds task execution support to a connected session port or MCP SDK client. */
+/** Adds task execution support to a connected MCP session port. */
 export function withTasks<TApplicationContext = void>(
   session: ConnectedMcpSessionPort,
-  options?: WithTasksOptions<TApplicationContext>,
-): TaskEnabledSession<TApplicationContext>;
-export function withTasks<TApplicationContext = void>(
-  client: Client,
-  options: WithTasksOptions<TApplicationContext> & {
-    readonly endpointId: string;
-  },
-): TaskEnabledSession<TApplicationContext>;
-export function withTasks<TApplicationContext = void>(
-  session: ConnectedMcpSessionPort | Client,
-  options: WithTasksOptions<TApplicationContext> & {
-    readonly endpointId?: string;
-  } = {},
+  options: WithTasksOptions<TApplicationContext> = {},
 ): TaskEnabledSession<TApplicationContext> {
-  if (isConnectedMcpSessionPort(session))
-    return new PortTaskEnabledSession(session, options);
-  if (!isClientPublicSurface(session))
-    throw new TypeError(
-      "withTasks requires a ConnectedMcpSessionPort or Client-compatible object",
-    );
-  const endpointId = options.endpointId;
-  if (endpointId === undefined)
-    throw new TypeError("withTasks(Client) requires options.endpointId");
-  const port = new ClientSessionPort(session, endpointId);
-  try {
-    return new PortTaskEnabledSession(port, options, () => {
-      port[Symbol.dispose]();
-    });
-  } catch (error) {
-    port[Symbol.dispose]();
-    throw error;
-  }
+  return new PortTaskEnabledSession(session, options);
 }

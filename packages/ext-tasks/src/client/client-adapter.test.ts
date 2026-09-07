@@ -3,10 +3,10 @@ import {
   ProtocolError,
   SdkError,
   SdkErrorCode,
-  type ClientContext,
 } from "@modelcontextprotocol/client";
+import type { ClientContext } from "@modelcontextprotocol/client";
 import { describe, expect, it, vi } from "vitest";
-import { type JsonValue } from "../core/index.js";
+import type { JsonValue } from "../core/index.js";
 import { createSessionPortFromClient, withTasks } from "./index.js";
 
 const client = () => new Client({ name: "test", version: "1" });
@@ -45,6 +45,60 @@ describe("Client adapter", () => {
       kind: "error",
       error: { code: -32001, message: "denied", data: { retry: false } },
     });
+  });
+
+  it("forwards headers through SDK request options", async () => {
+    const sdk = client();
+    const request = vi
+      .spyOn(sdk, "request")
+      .mockResolvedValueOnce({ ok: true });
+    const port = createSessionPortFromClient(sdk, "headers");
+    await port.dispatch(
+      { method: "custom/method" },
+      { context: { headers: { "x-trace": "trace-1" } } },
+    );
+    expect(request.mock.calls[0]?.[2]).toEqual({
+      headers: { "x-trace": "trace-1" },
+    });
+  });
+
+  it("routes V2 task traffic through raw dispatch before SDK validation", async () => {
+    const sdk = client();
+    vi.spyOn(sdk, "getProtocolEra").mockReturnValue("modern");
+    vi.spyOn(sdk, "getServerCapabilities").mockReturnValue({
+      extensions: { "io.modelcontextprotocol/tasks": {} },
+    });
+    const request = vi.spyOn(sdk, "request");
+    const rawDispatch = vi.fn().mockResolvedValue({
+      kind: "result",
+      result: { resultType: "task", taskId: "task-1" },
+    });
+    const port = createSessionPortFromClient(sdk, "modern", { rawDispatch });
+    const options = { context: { headers: { "x-trace": "trace-2" } } };
+    await expect(
+      port.dispatch({ method: "tools/call", params: { name: "x" } }, options),
+    ).resolves.toEqual({
+      kind: "result",
+      result: { resultType: "task", taskId: "task-1" },
+    });
+    expect(rawDispatch).toHaveBeenCalledWith(
+      { method: "tools/call", params: { name: "x" } },
+      options,
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("fails V2 port construction before send when no raw coordinator exists", () => {
+    const sdk = client();
+    vi.spyOn(sdk, "getProtocolEra").mockReturnValue("modern");
+    vi.spyOn(sdk, "getServerCapabilities").mockReturnValue({
+      extensions: { "io.modelcontextprotocol/tasks": {} },
+    });
+    const request = vi.spyOn(sdk, "request");
+    expect(() => createSessionPortFromClient(sdk, "modern")).toThrow(
+      "requires options.rawDispatch",
+    );
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("wraps cancellation and local SDK failures as non-retryable DispatchError", async () => {
@@ -89,9 +143,19 @@ describe("Client adapter", () => {
     vi.spyOn(modern, "getServerCapabilities").mockReturnValue({
       extensions: { "io.modelcontextprotocol/tasks": {} },
     });
-    expect(
-      createSessionPortFromClient(modern, "modern").taskCapabilities,
-    ).toEqual({ generation: "v2", capabilities: {} });
+    expect(() => createSessionPortFromClient(modern, "modern")).toThrow(
+      "requires options.rawDispatch",
+    );
+    const modernPort = createSessionPortFromClient(modern, "modern", {
+      rawDispatch: async () => {
+        await Promise.resolve();
+        return { kind: "result", result: {} };
+      },
+    });
+    expect(modernPort.taskCapabilities).toEqual({
+      generation: "v2",
+      capabilities: {},
+    });
     const absent = client();
     vi.spyOn(absent, "getProtocolEra").mockReturnValue("modern");
     vi.spyOn(absent, "getServerCapabilities").mockReturnValue({
@@ -100,6 +164,8 @@ describe("Client adapter", () => {
     expect(
       createSessionPortFromClient(absent, "none").taskCapabilities,
     ).toEqual({ generation: "none" });
+    legacyPort[Symbol.dispose]();
+    modernPort[Symbol.dispose]();
   });
 
   it("forwards inbound requests and settles results and full errors", async () => {
@@ -231,23 +297,27 @@ describe("Client adapter", () => {
       }
     }
     const foreign = new ForeignClient();
-    const session = withTasks(foreign as unknown as Client, {
-      endpointId: "foreign-client",
+    const port = createSessionPortFromClient(
+      foreign as unknown as Client,
+      "foreign-client",
+    );
+    const session = withTasks(port, {
       tools: { currentTool: () => undefined },
     });
     const execution = await session.callTool("x");
     await expect(execution.result()).resolves.toEqual({ content: [] });
     expect(foreign.request).toHaveBeenCalled();
     await session.close();
+    port[Symbol.dispose]();
   });
 
-  it("supports Client sessions through withTasks and restores callbacks", async () => {
+  it("supports explicitly adapted Client sessions and restores callbacks", async () => {
     const sdk = client();
     const request = vi.spyOn(sdk, "request").mockResolvedValue({ content: [] });
     const prior = vi.fn(() => Promise.resolve({ prior: true }));
     sdk.fallbackRequestHandler = prior;
-    const session = withTasks(sdk, {
-      endpointId: "raw-client",
+    const port = createSessionPortFromClient(sdk, "raw-client");
+    const session = withTasks(port, {
       tools: { currentTool: () => undefined },
     });
     const execution = await session.callTool("x");
@@ -268,6 +338,7 @@ describe("Client adapter", () => {
       context,
     );
     await session.close();
+    port[Symbol.dispose]();
     expect(sdk.fallbackRequestHandler).toBe(prior);
     expect(sdk.transport).toBeUndefined();
   });
@@ -283,13 +354,18 @@ describe("Client adapter", () => {
         throw sentinel;
       },
     );
-    const session = withTasks(sdk, {
-      endpointId: "close-failure",
+    const port = createSessionPortFromClient(sdk, "close-failure");
+    const errors: Error[] = [];
+    const session = withTasks(port, {
       signal: controller.signal,
       tools: { currentTool: () => undefined },
+      onError: (error) => errors.push(error),
     });
-    await expect(session.close()).rejects.toBe(sentinel);
-    await expect(session.close()).rejects.toBe(sentinel);
+    const closing = session.close();
+    await expect(closing).resolves.toBeUndefined();
+    expect(session.close()).toBe(closing);
+    expect(errors).toContain(sentinel);
+    port[Symbol.dispose]();
     expect(sdk.fallbackRequestHandler).toBe(prior);
     const replacement = createSessionPortFromClient(sdk, "close-failure");
     replacement[Symbol.dispose]();

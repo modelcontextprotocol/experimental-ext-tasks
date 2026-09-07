@@ -1,5 +1,8 @@
-import type { JsonValue } from "../core/index.js";
-import type { z } from "zod/v4";
+import {
+  ProtocolDecodeError,
+  type JsonValue,
+  type RuntimeCodec,
+} from "../core/index.js";
 import type { ServerTaskCapabilitiesV1 } from "../core/v1/index.js";
 import type { ErrorV2, TasksExtensionCapabilityV2 } from "../core/v2/index.js";
 import { JsonRpcResponseError } from "./api.js";
@@ -25,12 +28,25 @@ export interface IncomingServerRequest {
   readonly requestContext: unknown;
 }
 
+/** Per-dispatch transport context preserved by task follow-up requests. */
+export interface DispatchContext {
+  /** Additional transport headers. HTTP transports send these on this request. */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** Options for one port dispatch. */
+export interface DispatchOptions {
+  readonly signal?: AbortSignal;
+  /** Host-owned context that must remain attached to task lifecycle requests. */
+  readonly context?: DispatchContext;
+}
+
 export interface ConnectedMcpSessionPort {
   readonly endpointId: string;
   readonly taskCapabilities: SessionTaskCapabilities;
   dispatch(
     request: JsonValue,
-    options?: { readonly signal?: AbortSignal },
+    options?: DispatchOptions,
   ): Promise<JsonRpcResponse>;
   onServerRequest(
     handler: (incoming: IncomingServerRequest) => Promise<JsonRpcResponse>,
@@ -113,10 +129,14 @@ export function linkAbortSignals(
 export async function dispatchWithRetry(
   port: ConnectedMcpSessionPort,
   request: JsonValue,
-  signal: AbortSignal | undefined,
+  dispatchOptions: DispatchOptions | AbortSignal | undefined,
   retry: "observe" | "mutate",
 ): Promise<JsonRpcResponse> {
-  const options = signal === undefined ? undefined : { signal };
+  const options =
+    dispatchOptions instanceof AbortSignal
+      ? { signal: dispatchOptions }
+      : dispatchOptions;
+  const signal = options?.signal;
   try {
     return await port.dispatch(request, options);
   } catch (error) {
@@ -131,9 +151,29 @@ export async function dispatchWithRetry(
   }
 }
 
-/** Validates and parses a JSON-RPC result with the supplied Zod schema. */
-export function parseResult<T>(schema: z.ZodType<T>, value: JsonValue): T {
-  return schema.parse(value);
+interface InternalSchema<T> {
+  safeParse(
+    value: unknown,
+  ):
+    | { readonly success: true; readonly data: T }
+    | { readonly success: false; readonly error: unknown };
+}
+
+/** Validates and parses a JSON-RPC result with a public codec or internal schema. */
+export function parseResult<T>(
+  codec: RuntimeCodec<T> | InternalSchema<T>,
+  value: JsonValue,
+): T {
+  if ("safeParse" in codec) {
+    const decoded = codec.safeParse(value);
+    if (decoded.success) return decoded.data;
+    throw new ProtocolDecodeError("Protocol value failed schema validation", {
+      cause: decoded.error,
+    });
+  }
+  const decoded = codec.parse(value);
+  if (decoded.success) return decoded.value;
+  throw decoded.error;
 }
 
 /** Unwraps a JSON-RPC result or throws the response error. */

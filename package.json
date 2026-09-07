@@ -25,7 +25,8 @@
     "check:schema:json": "tsx scripts/generate-schemas.ts --check",
     "docs:dev": "vitepress dev",
     "docs:build": "vitepress build",
-    "docs:preview": "vitepress preview"
+    "docs:preview": "vitepress preview",
+    "check:peer-range": "node packages/ext-tasks/scripts/check-peer-range.mjs"
   },
   "devDependencies": {
     "mermaid": "^11.17.0",

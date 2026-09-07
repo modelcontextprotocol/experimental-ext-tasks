@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { withTasks } from "./index.js";
+import { toolDeclarationV2, withTasks } from "./index.js";
 import {
   FakePort,
   asJson,
@@ -12,7 +12,7 @@ import {
 describe("V2 input and task behavior", () => {
   it("drives a V2 task to its inline terminal result", async () => {
     const port = new FakePort({ generation: "v2", capabilities: {} });
-    const tool = { name: "long", inputSchema: { type: "object" } };
+    const tool = { name: "long", inputSchema: { type: "object" as const } };
     port.dispatchHandler = async (request) => {
       await Promise.resolve();
       const record = expectRecord(request);
@@ -49,7 +49,9 @@ describe("V2 input and task behavior", () => {
         return { kind: "result", result: { resultType: "complete" } };
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
-    const session = withTasks(port, { tools: { currentTool: () => tool } });
+    const session = withTasks(port, {
+      tools: { currentTool: () => toolDeclarationV2(tool) },
+    });
     const execution = await session.callTool("long");
     expect(execution.kind).toBe("task");
     expect(execution.handle).toEqual({
@@ -149,10 +151,11 @@ describe("V2 input and task behavior", () => {
           };
           const session = withTasks<{ marker: string }>(port, {
             tools: {
-              currentTool: () => ({
-                name: "x",
-                inputSchema: { type: "object" },
-              }),
+              currentTool: () =>
+                toolDeclarationV2({
+                  name: "x",
+                  inputSchema: { type: "object" },
+                }),
             },
             onInputRequest: async (request, context) => {
               await Promise.resolve();
@@ -268,7 +271,8 @@ describe("V2 input and task behavior", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
       onInputRequest: async () => {
         await Promise.resolve();
@@ -281,10 +285,10 @@ describe("V2 input and task behavior", () => {
     await expect(execution.result()).resolves.toMatchObject({
       resultType: "complete",
     });
-    expect(handlerCalls).toBe(1);
+    expect(handlerCalls).toBe(3);
     expect(
       errors.some((error) => error.message.includes("reused incompatibly")),
-    ).toBe(true);
+    ).toBe(false);
     expect(errors.some((error) => error.message === "declined")).toBe(true);
     expect(
       port.requests.filter(
@@ -350,7 +354,8 @@ describe("V2 input and task behavior", () => {
     const errors: Error[] = [];
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
       onInputRequest: async () => {
         await Promise.resolve();
@@ -416,7 +421,8 @@ describe("V2 input and task behavior", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
       onInputRequest: (_request, context) => {
         handlerSignal = context.signal;
@@ -516,10 +522,11 @@ describe("V2 input and task behavior", () => {
           };
           const session = withTasks(port, {
             tools: {
-              currentTool: () => ({
-                name: "x",
-                inputSchema: { type: "object" },
-              }),
+              currentTool: () =>
+                toolDeclarationV2({
+                  name: "x",
+                  inputSchema: { type: "object" },
+                }),
             },
           });
           const execution = await session.callTool("x");

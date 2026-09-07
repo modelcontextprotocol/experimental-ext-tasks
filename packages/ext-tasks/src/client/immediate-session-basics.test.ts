@@ -1,8 +1,16 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { type JsonValue } from "../core/index.js";
-import { z } from "zod/v4";
-import { DispatchError, JsonRpcResponseError, withTasks } from "./index.js";
+import {
+  ProtocolDecodeError,
+  type JsonValue,
+  type RuntimeCodec,
+} from "../core/index.js";
+import {
+  DispatchError,
+  JsonRpcResponseError,
+  toolDeclarationV1,
+  withTasks,
+} from "./index.js";
 import { FakePort, asJson } from "../../test-support/client/fake-port.js";
 
 describe("immediate and session basics", () => {
@@ -44,17 +52,116 @@ describe("immediate and session basics", () => {
     );
   });
 
-  it("uses an application result schema at the dispatch boundary", async () => {
+  it("preserves call metadata and transport headers", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    const session = withTasks(port, {
+      tools: { currentTool: () => undefined },
+    });
+    await session.callTool("x", undefined, {
+      metadata: { trace: "request-1" },
+      headers: { "x-routing-key": "route-1" },
+    });
+    expect(port.requests).toEqual([
+      {
+        method: "tools/call",
+        params: {
+          name: "x",
+          _meta: {
+            trace: "request-1",
+            "io.modelcontextprotocol/clientCapabilities": {
+              extensions: { "io.modelcontextprotocol/tasks": {} },
+            },
+          },
+        },
+      },
+    ]);
+    expect(port.dispatchOptions[0]?.context?.headers).toEqual({
+      "x-routing-key": "route-1",
+    });
+    await session.close();
+  });
+
+  it("adds requested TTL only to V1 task calls", async () => {
+    const port = new FakePort({
+      generation: "v1",
+      capabilities: { cancel: {}, requests: { tools: { call: {} } } },
+    });
+    port.response = {
+      kind: "result",
+      result: {
+        task: {
+          taskId: "task-ttl",
+          status: "working",
+          createdAt: "now",
+          lastUpdatedAt: "now",
+          ttl: 5000,
+        },
+      },
+    };
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () =>
+          toolDeclarationV1({
+            name: "x",
+            inputSchema: { type: "object" },
+            execution: { taskSupport: "required" },
+          }),
+      },
+    });
+    const execution = await session.callTool("x", undefined, {
+      taskTtl: 5000,
+      headers: { "x-routing-key": "route-task" },
+    });
+    expect(port.requests[0]).toEqual({
+      method: "tools/call",
+      params: { name: "x", task: { ttl: 5000 } },
+    });
+    port.response = {
+      kind: "result",
+      result: {
+        taskId: "task-ttl",
+        status: "cancelled",
+        createdAt: "now",
+        lastUpdatedAt: "later",
+        ttl: 5000,
+      },
+    };
+    await execution.cancel();
+    expect(port.requests[1]).toEqual({
+      method: "tasks/cancel",
+      params: { taskId: "task-ttl" },
+    });
+    expect(port.dispatchOptions[1]?.context?.headers).toEqual({
+      "x-routing-key": "route-task",
+    });
+    await session.close();
+  });
+
+  it("uses an application result codec at the dispatch boundary", async () => {
     const port = new FakePort();
     port.response = { kind: "result", result: { answer: 42 } };
-    const resultSchema = z
-      .object({ answer: z.number() })
-      .transform(({ answer }) => String(answer));
+    const resultCodec: RuntimeCodec<string> = {
+      parse(value) {
+        const answer =
+          value !== null &&
+          !Array.isArray(value) &&
+          typeof value === "object" &&
+          "answer" in value
+            ? value.answer
+            : undefined;
+        return typeof answer === "number"
+          ? { success: true, value: String(answer) }
+          : {
+              success: false,
+              error: new ProtocolDecodeError("Expected answer"),
+            };
+      },
+    };
     const session = withTasks<string>(port, {
       tools: { currentTool: () => undefined },
     });
     const execution = await session.callTool("answer", undefined, {
-      resultSchema,
+      resultCodec,
       applicationContext: "ctx",
     });
     expect(execution.applicationContext).toBe("ctx");
@@ -62,8 +169,8 @@ describe("immediate and session basics", () => {
 
     port.response = { kind: "result", result: { answer: "invalid" } };
     await expect(
-      session.callTool("answer", undefined, { resultSchema }),
-    ).rejects.toBeInstanceOf(z.ZodError);
+      session.callTool("answer", undefined, { resultCodec }),
+    ).rejects.toBeInstanceOf(ProtocolDecodeError);
     await session.close();
   });
 

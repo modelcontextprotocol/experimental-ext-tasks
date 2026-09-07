@@ -1,13 +1,17 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { type TaskId } from "../core/index.js";
+import type { TaskId } from "../core/index.js";
 import {
   DispatchError,
-  InputCorrelationError,
+  TaskRecoveryOwnershipError,
+  toolDeclarationV1,
+  toolDeclarationV2,
   withTasks,
-  type JsonRpcResponse,
-  type SessionTaskCapabilities,
-  type SerializedTaskReference,
+} from "./index.js";
+import type {
+  JsonRpcResponse,
+  SessionTaskCapabilities,
+  SerializedTaskReference,
 } from "./index.js";
 import {
   FakePort,
@@ -59,7 +63,7 @@ describe("task reference resumption", () => {
     );
   });
 
-  it("labels resumed V1 candidates without inventing a tool name", async () => {
+  it("does not misroute evidence-free initiating input to a resumed task", async () => {
     const port = new FakePort(
       {
         generation: "v1",
@@ -112,12 +116,21 @@ describe("task reference resumption", () => {
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const errors: Error[] = [];
+    const contexts: unknown[] = [];
     const session = withTasks(port, {
       tools: {
         currentTool: (name) =>
           name === "ordinary"
-            ? { name, inputSchema: { type: "object" } }
+            ? toolDeclarationV1({
+                name,
+                inputSchema: { type: "object" },
+              })
             : undefined,
+      },
+      onInputRequest: async (_request, context) => {
+        await Promise.resolve();
+        contexts.push(context);
+        return { action: "accept" } as never;
       },
       onError: (error) => errors.push(error),
     });
@@ -129,16 +142,15 @@ describe("task reference resumption", () => {
     });
     const ordinary = session.callTool("ordinary");
     while (finishOrdinary === undefined) await Promise.resolve();
-    await port.serve({ method: "elicitation/create", params: {} });
-    expect(errors).toHaveLength(1);
-    const candidates = (errors[0] as InputCorrelationError).candidates;
-    expect(candidates.map((candidate) => candidate.toolName)).toEqual([
-      "ordinary",
-      "<resumed>",
-    ]);
-    expect(candidates.every((candidate) => !("taskId" in candidate))).toBe(
-      true,
-    );
+    await expect(
+      port.serve({ method: "elicitation/create", params: {} }),
+    ).resolves.toEqual({ kind: "result", result: { action: "accept" } });
+    expect(errors).toEqual([]);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]).toMatchObject({
+      lifetime: "basic",
+      applicationContext: undefined,
+    });
     finishOrdinary({ kind: "result", result: { content: [] } });
     await ordinary;
     await resumed.close();
@@ -208,12 +220,15 @@ describe("task reference resumption", () => {
             tools: {
               currentTool: () =>
                 generation === "v1"
-                  ? {
+                  ? toolDeclarationV1({
                       name: "roundtrip",
-                      inputSchema: {},
+                      inputSchema: { type: "object" },
                       execution: { taskSupport: "required" },
-                    }
-                  : { name: "roundtrip", inputSchema: {} },
+                    })
+                  : toolDeclarationV2({
+                      name: "roundtrip",
+                      inputSchema: { type: "object" },
+                    }),
             },
           });
           const sourceExecution = await sourceSession.callTool("roundtrip");
@@ -362,5 +377,181 @@ describe("task reference resumption", () => {
       }),
       { numRuns: 10 },
     );
+  });
+
+  it("gives one concurrent V2 resume ownership of input handling and updates", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    let releaseGet: ((response: JsonRpcResponse) => void) | undefined;
+    let getCalls = 0;
+    let handlerCalls = 0;
+    port.dispatchHandler = async (request) => {
+      const method = expectRecord(request).method;
+      if (method === "tasks/get") {
+        getCalls += 1;
+        if (getCalls === 1)
+          return new Promise((resolve) => {
+            releaseGet = resolve;
+          });
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "complete",
+            taskId: "owned-resume",
+            status: "completed",
+            createdAt: "a",
+            lastUpdatedAt: "c",
+            ttlMs: null,
+            result: { content: [] },
+          }),
+        };
+      }
+      if (method === "tasks/update")
+        return { kind: "result", result: { resultType: "complete" } };
+      throw new Error(`unexpected method ${formatJson(method)}`);
+    };
+    const session = withTasks(port, {
+      tools: { currentTool: () => undefined },
+      onInputRequest: async () => {
+        await Promise.resolve();
+        handlerCalls += 1;
+        return { roots: [] } as never;
+      },
+    });
+    const reference = {
+      endpointId: port.endpointId,
+      generation: "v2",
+      taskId: "owned-resume" as TaskId,
+      originalOperation: "tools/call",
+    } as const;
+    const first = session.resumeTask(reference);
+    await Promise.resolve();
+    await expect(session.resumeTask(reference)).rejects.toBeInstanceOf(
+      TaskRecoveryOwnershipError,
+    );
+    expect(getCalls).toBe(1);
+    releaseGet?.({
+      kind: "result",
+      result: asJson({
+        resultType: "complete",
+        taskId: "owned-resume",
+        status: "input_required",
+        createdAt: "a",
+        lastUpdatedAt: "b",
+        ttlMs: null,
+        inputRequests: { only: { method: "roots/list" } },
+      }),
+    });
+    const execution = await first;
+    await expect(execution.result()).resolves.toMatchObject({ content: [] });
+    expect(handlerCalls).toBe(1);
+    expect(
+      port.requests.filter(
+        (request) => expectRecord(request).method === "tasks/update",
+      ),
+    ).toHaveLength(1);
+    await session.close();
+  });
+
+  it("fails closed when an active task identity uses another original operation", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    port.dispatchHandler = async () =>
+      new Promise<JsonRpcResponse>(() => {
+        // Keep the first recovery active while collision identity is checked.
+      });
+    const session = withTasks(port, {
+      tools: { currentTool: () => undefined },
+    });
+    const reference = {
+      endpointId: port.endpointId,
+      generation: "v2",
+      taskId: "operation-collision" as TaskId,
+      originalOperation: "tools/call",
+    } as const;
+    void session.resumeTask(reference).catch(() => {});
+    await Promise.resolve();
+    const collision = {
+      ...reference,
+      originalOperation: "resources/read",
+    } as never;
+    await expect(session.resumeTask(collision)).rejects.toMatchObject({
+      name: "TaskRecoveryOwnershipError",
+      activeOriginalOperation: "tools/call",
+      originalOperation: "resources/read",
+    });
+    expect(port.requests).toHaveLength(1);
+    await session.close();
+  });
+
+  it("releases a failed resume reservation", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    let calls = 0;
+    port.dispatchHandler = async () => {
+      await Promise.resolve();
+      calls += 1;
+      if (calls === 1) throw new Error("resume failed");
+      return {
+        kind: "result",
+        result: asJson({
+          resultType: "complete",
+          taskId: "failed-resume",
+          status: "completed",
+          createdAt: "a",
+          lastUpdatedAt: "b",
+          ttlMs: null,
+          result: { content: [] },
+        }),
+      };
+    };
+    const session = withTasks(port, {
+      tools: { currentTool: () => undefined },
+    });
+    const reference = {
+      endpointId: port.endpointId,
+      generation: "v2",
+      taskId: "failed-resume" as TaskId,
+      originalOperation: "tools/call",
+    } as const;
+    await expect(session.resumeTask(reference)).rejects.toThrow(
+      "resume failed",
+    );
+    const execution = await session.resumeTask(reference);
+    await expect(execution.result()).resolves.toMatchObject({ content: [] });
+    expect(calls).toBe(2);
+    await session.close();
+  });
+
+  it("allows a new resume after the prior owner settles terminally", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    port.dispatchHandler = async () => {
+      await Promise.resolve();
+      return {
+        kind: "result",
+        result: asJson({
+          resultType: "complete",
+          taskId: "terminal-resume",
+          status: "completed",
+          createdAt: "a",
+          lastUpdatedAt: "b",
+          ttlMs: null,
+          result: { content: [] },
+        }),
+      };
+    };
+    const session = withTasks(port, {
+      tools: { currentTool: () => undefined },
+    });
+    const reference = {
+      endpointId: port.endpointId,
+      generation: "v2",
+      taskId: "terminal-resume" as TaskId,
+      originalOperation: "tools/call",
+    } as const;
+    const first = await session.resumeTask(reference);
+    await first.result();
+    await Promise.resolve();
+    const second = await session.resumeTask(reference);
+    await expect(second.result()).resolves.toMatchObject({ content: [] });
+    expect(port.requests).toHaveLength(2);
+    await session.close();
   });
 });

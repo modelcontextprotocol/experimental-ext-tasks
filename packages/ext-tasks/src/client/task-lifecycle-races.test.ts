@@ -5,6 +5,7 @@ import {
   JsonRpcResponseError,
   TaskExecutionClosedError,
   TaskUpdatesAlreadyAcquiredError,
+  toolDeclarationV2,
   withTasks,
 } from "./index.js";
 import { deterministicJson } from "./execution.js";
@@ -56,7 +57,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -83,6 +85,65 @@ describe("task lifecycle and races", () => {
     await expect(execution.result()).rejects.toBeInstanceOf(
       TaskExecutionClosedError,
     );
+    await session.close();
+  });
+
+  it("does not emit an unhandled rejection when cancellation is followed by close", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    port.dispatchHandler = async (request, options) => {
+      const record = expectRecord(request);
+      if (record.method === "tools/call")
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "task",
+            taskId: "cancel-close-consumers",
+            status: "working",
+            createdAt: "a",
+            lastUpdatedAt: "a",
+            ttlMs: null,
+          }),
+        };
+      if (record.method === "tasks/get")
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(asError(options.signal?.reason));
+            },
+            { once: true },
+          );
+        });
+      if (record.method === "tasks/cancel")
+        return { kind: "result", result: { resultType: "complete" } };
+      throw new Error(`unexpected method ${formatJson(record.method)}`);
+    };
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+      },
+    });
+    const execution = await session.callTool("x");
+    const result = execution.result();
+    const updates = execution.updates()[Symbol.asyncIterator]();
+    await expect(updates.next()).resolves.toMatchObject({
+      value: { task: { status: "working" } },
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      await execution.cancel();
+      await execution.close();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      await expect(result).rejects.toBeInstanceOf(TaskExecutionClosedError);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
     await session.close();
   });
 
@@ -121,7 +182,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -173,7 +235,8 @@ describe("task lifecycle and races", () => {
         };
         const session = withTasks(port, {
           tools: {
-            currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+            currentTool: () =>
+              toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
           },
         });
         const execution = await session.callTool("x");
@@ -227,7 +290,8 @@ describe("task lifecycle and races", () => {
         };
         const session = withTasks(port, {
           tools: {
-            currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+            currentTool: () =>
+              toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
           },
         });
         const execution = await session.callTool("x");
@@ -269,7 +333,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -364,7 +429,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -447,7 +513,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -489,7 +556,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -576,7 +644,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -619,7 +688,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -674,7 +744,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -757,7 +828,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -808,7 +880,8 @@ describe("task lifecycle and races", () => {
     };
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({ name: "x", inputSchema: { type: "object" } }),
+        currentTool: () =>
+          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");

@@ -1,16 +1,16 @@
 import type { JsonValue } from "../core/index.js";
-import { ToolV1Schema, type ToolV1 } from "../core/v1/index.js";
-import { ToolV2Schema, type ToolV2 } from "../core/v2/index.js";
-import type { z } from "zod/v4";
-import { JsonRpcResponseError, type ToolDeclarationProvider } from "./api.js";
+import { ToolV1Schema } from "../core/v1/index.js";
+import { ToolV2Schema } from "../core/v2/index.js";
+import {
+  JsonRpcResponseError,
+  type ToolDeclaration,
+  type ToolDeclarationProvider,
+} from "./api.js";
 import type { ConnectedMcpSessionPort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
 
-const ToolV1Parser = ToolV1Schema as unknown as z.ZodType;
-const ToolV2Parser = ToolV2Schema as unknown as z.ZodType;
-
 export class ManagedToolDeclarations implements ToolDeclarationProvider {
-  private tools = new Map<string, ToolV1 | ToolV2>();
+  private tools = new Map<string, ToolDeclaration>();
   private refreshSequence = 0;
   private refreshController: AbortController | undefined;
   private initialReady: Promise<void>;
@@ -24,7 +24,7 @@ export class ManagedToolDeclarations implements ToolDeclarationProvider {
     void this.initialReady.catch(() => {});
   }
 
-  currentTool(name: string): ToolV1 | ToolV2 | undefined {
+  currentTool(name: string): ToolDeclaration | undefined {
     return this.tools.get(name);
   }
 
@@ -98,7 +98,7 @@ export class ManagedToolDeclarations implements ToolDeclarationProvider {
     this.refreshController?.abort();
     const controller = new AbortController();
     this.refreshController = controller;
-    const decoded = new Map<string, ToolV1 | ToolV2>();
+    const decoded = new Map<string, ToolDeclaration>();
     let cursor: string | undefined;
     do {
       const response = await this.port.dispatch(
@@ -121,29 +121,22 @@ export class ManagedToolDeclarations implements ToolDeclarationProvider {
       const listed = result.tools;
       if (!Array.isArray(listed))
         throw new Error("tools/list result must contain tools");
-      const generation = (
-        this.port.taskCapabilities as {
-          readonly generation: "none" | "v1" | "v2";
-        }
-      ).generation;
+      const generation = this.port.taskCapabilities.generation;
       for (const value of listed) {
-        const parsed =
-          generation === "v1"
-            ? ToolV1Parser.safeParse(value)
-            : generation === "v2"
-              ? ToolV2Parser.safeParse(value)
-              : (() => {
-                  const v2 = ToolV2Parser.safeParse(value);
-                  return v2.success ? v2 : ToolV1Parser.safeParse(value);
-                })();
-        if (!parsed.success) throw parsed.error;
-        const tool = parsed.data as ToolV1 | ToolV2;
-        if (decoded.has(tool.name)) {
-          this.reportError(
-            new Error(`Duplicate tool declaration: ${tool.name}`),
-          );
+        let declaration: ToolDeclaration;
+        if (generation === "v1") {
+          const parsed = ToolV1Schema.safeParse(value);
+          if (!parsed.success) throw parsed.error;
+          declaration = { generation: "v1", tool: parsed.data };
+        } else {
+          const parsed = ToolV2Schema.safeParse(value);
+          if (!parsed.success) throw parsed.error;
+          declaration = { generation: "v2", tool: parsed.data };
         }
-        decoded.set(tool.name, tool);
+        const toolName = declaration.tool.name;
+        if (decoded.has(toolName))
+          throw new Error(`Duplicate tool declaration: ${toolName}`);
+        decoded.set(toolName, declaration);
       }
       cursor =
         typeof result.nextCursor === "string" ? result.nextCursor : undefined;

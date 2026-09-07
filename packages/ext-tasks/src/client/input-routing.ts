@@ -49,11 +49,10 @@ export type RelatedTaskEvidence =
   | { readonly kind: "invalid" }
   | { readonly kind: "task-id"; readonly taskId: string };
 
-export interface InputCandidateProjection<TApplicationContext> {
+export interface InputCandidateProjection {
   readonly generation: TaskGeneration;
   readonly toolName: string;
   readonly executionId: string;
-  readonly applicationContext: TApplicationContext;
 }
 
 export type InputCandidateResolution<TApplicationContext> =
@@ -64,7 +63,7 @@ export type InputCandidateResolution<TApplicationContext> =
   | {
       readonly kind: "failed";
       readonly reason: InputCorrelationFailureReason;
-      readonly candidates: readonly InputCandidateProjection<TApplicationContext>[];
+      readonly candidates: readonly InputCandidateProjection[];
     };
 
 /** Projects a supported wire request into the application input request shape. */
@@ -145,7 +144,9 @@ export function resolveInputCandidate<TApplicationContext>(
       ? taskCandidates.filter(
           (candidate) => candidate.taskId === evidence.taskId,
         )
-      : [...ordinaryCandidates, ...taskCandidates];
+      : evidence.kind === "absent"
+        ? ordinaryCandidates
+        : [];
   const reason = correlationFailureReason(evidence, matches.length);
   if (reason !== undefined) {
     return {
@@ -155,7 +156,6 @@ export function resolveInputCandidate<TApplicationContext>(
         generation: candidate.generation,
         toolName: candidate.toolName,
         executionId: candidate.executionId,
-        applicationContext: candidate.applicationContext,
       })),
     };
   }

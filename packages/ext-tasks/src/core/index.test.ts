@@ -2,7 +2,8 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
-  JsonValueSchema,
+  JsonValueCodec,
+  ProtocolDecodeError,
   isJsonValue,
   taskId,
   type JsonValue,
@@ -24,7 +25,7 @@ describe("core runtime contracts", () => {
     fc.assert(
       fc.property(jsonValue, (value) => {
         expect(isJsonValue(value)).toBe(true);
-        expect(JsonValueSchema.parse(value)).toEqual(value);
+        expect(JsonValueCodec.parse(value)).toEqual({ success: true, value });
       }),
     );
     fc.assert(
@@ -32,7 +33,10 @@ describe("core runtime contracts", () => {
         fc.oneof(fc.constant(undefined), fc.bigInt(), fc.constant(Symbol("x"))),
         (value) => {
           expect(isJsonValue(value)).toBe(false);
-          expect(JsonValueSchema.safeParse(value).success).toBe(false);
+          const decoded = JsonValueCodec.parse(value as never);
+          expect(decoded.success).toBe(false);
+          if (!decoded.success)
+            expect(decoded.error).toBeInstanceOf(ProtocolDecodeError);
         },
       ),
     );
@@ -64,14 +68,19 @@ describe("core runtime contracts", () => {
     ];
 
     for (const value of nonJsonValues) {
-      expect(JsonValueSchema.safeParse(value).success).toBe(false);
-      expect(() => JsonValueSchema.parse(value)).toThrow();
+      const decoded = JsonValueCodec.parse(value as never);
+      expect(decoded.success).toBe(false);
+      if (!decoded.success)
+        expect(decoded.error).toBeInstanceOf(ProtocolDecodeError);
     }
   });
 
   it("accepts plain objects with null prototypes", () => {
     const value = Object.assign(Object.create(null) as object, { ok: true });
-    expect(JsonValueSchema.parse(value)).toEqual(value);
+    expect(JsonValueCodec.parse(value as JsonValue)).toEqual({
+      success: true,
+      value,
+    });
   });
   it("brands task identifiers without changing their wire value", () => {
     fc.assert(

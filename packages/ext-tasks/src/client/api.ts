@@ -1,18 +1,20 @@
 import type {
   JsonValue,
+  RuntimeCodec,
   TaskGeneration,
   TaskId,
   TaskSnapshot,
 } from "../core/index.js";
-import type { z } from "zod/v4";
 import type {
   CallToolResultV1,
   TaskEligibleMethodV1,
+  ToolV1,
 } from "../core/v1/index.js";
 import type {
   CallToolResultV2,
   ErrorV2,
   TaskEligibleMethodV2,
+  ToolV2,
 } from "../core/v2/index.js";
 
 export class JsonRpcResponseError extends Error {
@@ -29,16 +31,45 @@ export class JsonRpcResponseError extends Error {
   }
 }
 
+export class TaskRecoveryOwnershipError extends Error {
+  constructor(
+    readonly generation: TaskGeneration,
+    readonly taskId: TaskId,
+    readonly originalOperation: string,
+    readonly activeOriginalOperation: string,
+  ) {
+    const collision = originalOperation !== activeOriginalOperation;
+    super(
+      collision
+        ? `Task recovery identity collides with active operation ${activeOriginalOperation}`
+        : "Task recovery already has an active owner",
+    );
+    this.name = "TaskRecoveryOwnershipError";
+  }
+}
+
+export type ToolDeclaration =
+  | {
+      readonly generation: "v1";
+      readonly tool: ToolV1;
+    }
+  | {
+      readonly generation: "v2";
+      readonly tool: ToolV2;
+    };
+
+/** Tags a generated V1 tool declaration for a host-supplied provider. */
+export function toolDeclarationV1(tool: ToolV1): ToolDeclaration {
+  return { generation: "v1", tool };
+}
+
+/** Tags a generated V2 tool declaration for a host-supplied provider. */
+export function toolDeclarationV2(tool: ToolV2): ToolDeclaration {
+  return { generation: "v2", tool };
+}
+
 export interface ToolDeclarationProvider {
-  currentTool(name: string):
-    | {
-        readonly name: string;
-        readonly inputSchema: Readonly<Record<string, JsonValue>>;
-        readonly execution?: {
-          readonly taskSupport?: "forbidden" | "optional" | "required";
-        };
-      }
-    | undefined;
+  currentTool(name: string): ToolDeclaration | undefined;
 }
 
 export type ApplicationInputRequest =
@@ -115,18 +146,17 @@ export type InputCorrelationFailureReason =
   | "zero-matches"
   | "ambiguous-matches";
 
-export interface InputCorrelationCandidate<TApplicationContext = void> {
+export interface InputCorrelationCandidate {
   readonly generation: TaskGeneration;
   readonly toolName: string;
   readonly executionId: string;
-  readonly applicationContext: TApplicationContext;
 }
 
-export class InputCorrelationError<TApplicationContext = void> extends Error {
+export class InputCorrelationError extends Error {
   constructor(
     readonly generation: TaskGeneration,
     readonly requestKind: ApplicationInputRequest["kind"],
-    readonly candidates: readonly InputCorrelationCandidate<TApplicationContext>[],
+    readonly candidates: readonly InputCorrelationCandidate[],
     readonly reason: InputCorrelationFailureReason,
   ) {
     super(`Input request correlation failed: ${reason}`);
@@ -196,21 +226,30 @@ export class TaskCancellationUnsupportedError extends Error {
   }
 }
 
+/** Options for one tool call, including host-owned wire context. */
+export interface ToolCallOptions<TResult, TApplicationContext = void> {
+  readonly resultCodec?: RuntimeCodec<TResult>;
+  readonly applicationContext?: TApplicationContext;
+  readonly signal?: AbortSignal;
+  readonly preferTask?: boolean;
+  /** Arbitrary request metadata preserved alongside package-owned keys. */
+  readonly metadata?: Readonly<Record<string, JsonValue>>;
+  /** Additional headers for the initiating call and task follow-up requests. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** Requested V1 task lifetime in milliseconds. Ignored when no V1 task is requested. */
+  readonly taskTtl?: number;
+}
+
 export interface TaskEnabledSession<TApplicationContext = void> {
   callTool<TResult = CallToolResultV1 | CallToolResultV2>(
     name: string,
     params?: Readonly<Record<string, JsonValue>>,
-    options?: {
-      readonly resultSchema?: z.ZodType<TResult>;
-      readonly applicationContext?: TApplicationContext;
-      readonly signal?: AbortSignal;
-      readonly preferTask?: boolean;
-    },
+    options?: ToolCallOptions<TResult, TApplicationContext>,
   ): Promise<ToolExecution<TResult, TApplicationContext>>;
   resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
     reference: SerializedTaskReference,
     options?: {
-      readonly resultSchema?: z.ZodType<TResult>;
+      readonly resultCodec?: RuntimeCodec<TResult>;
       readonly applicationContext?: TApplicationContext;
       readonly signal?: AbortSignal;
     },

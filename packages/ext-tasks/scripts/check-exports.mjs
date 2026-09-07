@@ -19,7 +19,7 @@ const manifest = JSON.parse(
 const packageName = manifest.name;
 const publicSubpaths = ["core", "core/v1", "core/v2", "client"];
 const expectedRuntimeExports = {
-  core: ["JsonValueSchema", "isJsonValue", "taskId"],
+  core: ["JsonValueCodec", "ProtocolDecodeError", "isJsonValue", "taskId"],
   "core/v1": [
     "CallToolAsTaskRequestV1Schema",
     "CallToolRequestV1Schema",
@@ -114,15 +114,16 @@ const expectedRuntimeExports = {
     "JsonRpcResponseError",
     "TaskCancellationUnsupportedError",
     "TaskExecutionClosedError",
+    "TaskRecoveryOwnershipError",
     "TaskUpdatesAlreadyAcquiredError",
     "createSessionPortFromClient",
+    "toolDeclarationV1",
+    "toolDeclarationV2",
     "withTasks",
   ],
 };
 const removedCoreNames = [
   "DecodePath",
-  "ProtocolDecodeError",
-  "RuntimeCodec",
   "createRuntimeCodec",
   "expectEnum",
   "expectNumber",
@@ -372,13 +373,20 @@ async function checkPackedContract() {
       )
       .join("\n");
     const positiveSource = `${positiveImports}
-import { withTasks, type ConnectedMcpSessionPort } from "${packageName}/client";
-import * as z from "zod/v4";
+import { withTasks } from "${packageName}/client";
+import type { ConnectedMcpSessionPort } from "${packageName}/client";
+import { ProtocolDecodeError } from "${packageName}/core";
+import type { RuntimeCodec } from "${packageName}/core";
 declare const port: ConnectedMcpSessionPort;
+const resultCodec: RuntimeCodec<number> = {
+  parse(value) {
+    if (value !== null && !Array.isArray(value) && typeof value === "object" && "value" in value && typeof value.value === "string")
+      return { success: true, value: value.value.length };
+    return { success: false, error: new ProtocolDecodeError("Expected value") };
+  },
+};
 const session = withTasks(port);
-const execution = await session.callTool("example", undefined, {
-  resultSchema: z.object({ value: z.string() }).transform(({ value }) => value.length),
-});
+const execution = await session.callTool("example", undefined, { resultCodec });
 const inferred: number = await execution.result();
 void inferred;
 `;
@@ -422,7 +430,8 @@ void inferred;
       ],
       [
         "removed-result-codec-option",
-        `import { withTasks, type ConnectedMcpSessionPort } from "${packageName}/client";
+        `import { withTasks } from "${packageName}/client";
+import type { ConnectedMcpSessionPort } from "${packageName}/client";
 declare const port: ConnectedMcpSessionPort;
 void withTasks(port).callTool("example", undefined, { resultCodec: {} });`,
       ],

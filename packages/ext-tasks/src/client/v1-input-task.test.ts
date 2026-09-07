@@ -1,17 +1,15 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { type JsonValue } from "../core/index.js";
-import {
-  type ServerTaskCapabilitiesV1,
-  type ToolV1,
-} from "../core/v1/index.js";
+import type { JsonValue } from "../core/index.js";
+import type { ServerTaskCapabilitiesV1, ToolV1 } from "../core/v1/index.js";
 import {
   InputCorrelationError,
   TaskCancellationUnsupportedError,
   TaskExecutionClosedError,
+  toolDeclarationV1,
   withTasks,
-  type JsonRpcResponse,
 } from "./index.js";
+import type { JsonRpcResponse } from "./index.js";
 import {
   FakePort,
   asJson,
@@ -161,7 +159,7 @@ describe("V1 input and task behavior", () => {
       requestKind: "elicitation",
     });
     expect(
-      (errors[0] as InputCorrelationError<string>).candidates.map(
+      (errors[0] as InputCorrelationError).candidates.map(
         (candidate) => candidate.toolName,
       ),
     ).toEqual(["first", "second"]);
@@ -233,11 +231,12 @@ describe("V1 input and task behavior", () => {
           const observed: unknown[] = [];
           const session = withTasks<string>(port, {
             tools: {
-              currentTool: (name) => ({
-                name,
-                inputSchema: { type: "object" },
-                execution: { taskSupport: "required" },
-              }),
+              currentTool: (name) =>
+                toolDeclarationV1({
+                  name,
+                  inputSchema: { type: "object" },
+                  execution: { taskSupport: "required" },
+                }),
             },
             onInputRequest: async (request, context) => {
               await Promise.resolve();
@@ -281,9 +280,7 @@ describe("V1 input and task behavior", () => {
                     },
                   };
           const settlement = await port.serve({ method, params: relatedTask });
-          const succeeds =
-            (evidenceState === "absent" && candidateCount === 1) ||
-            (evidenceState === "matching" && candidateCount > 0);
+          const succeeds = evidenceState === "matching" && candidateCount > 0;
           expect(observed).toHaveLength(succeeds ? 1 : 0);
           expect(errors).toHaveLength(succeeds ? 0 : 1);
           if (succeeds) {
@@ -302,7 +299,7 @@ describe("V1 input and task behavior", () => {
             const expectedReason =
               evidenceState === "invalid"
                 ? "invalid-evidence"
-                : evidenceState === "absent" && candidateCount === 0
+                : evidenceState === "absent"
                   ? "missing-evidence"
                   : evidenceState === "missing" || candidateCount === 0
                     ? "zero-matches"
@@ -310,12 +307,9 @@ describe("V1 input and task behavior", () => {
             expect(errors[0]).toBeInstanceOf(InputCorrelationError);
             expect(errors[0]).toMatchObject({ reason: expectedReason });
             if (evidenceState === "invalid") {
-              const candidates = (errors[0] as InputCorrelationError<string>)
+              const candidates = (errors[0] as InputCorrelationError)
                 .candidates;
-              expect(candidates).toHaveLength(candidateCount);
-              expect(
-                candidates.every((candidate) => !("taskId" in candidate)),
-              ).toBe(true);
+              expect(candidates).toEqual([]);
             }
             expect(settlement).toEqual(
               method === "elicitation/create"
@@ -430,11 +424,12 @@ describe("V1 input and task behavior", () => {
     let handlerSignal: AbortSignal | undefined;
     const session = withTasks(port, {
       tools: {
-        currentTool: () => ({
-          name: "x",
-          inputSchema: { type: "object" },
-          execution: { taskSupport: "required" },
-        }),
+        currentTool: () =>
+          toolDeclarationV1({
+            name: "x",
+            inputSchema: { type: "object" },
+            execution: { taskSupport: "required" },
+          }),
       },
       onInputRequest: async (_request, context) => {
         await Promise.resolve();
@@ -444,7 +439,14 @@ describe("V1 input and task behavior", () => {
       onError: (error) => errors.push(error),
     });
     const execution = await session.callTool("x");
-    await port.serve({ method: "elicitation/create", params: {} });
+    await port.serve({
+      method: "elicitation/create",
+      params: {
+        _meta: {
+          "io.modelcontextprotocol/related-task": { taskId: "lifecycle" },
+        },
+      },
+    });
     expect(handlerSignal?.aborted).toBe(false);
     await execution.close();
     await expect(execution.result()).rejects.toBeInstanceOf(
@@ -512,7 +514,7 @@ describe("V1 input and task behavior", () => {
             tools: {
               currentTool: () => {
                 lookups += 1;
-                return tool;
+                return toolDeclarationV1(tool);
               },
             },
           });
@@ -601,7 +603,9 @@ describe("V1 input and task behavior", () => {
       }
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
-    const session = withTasks(port, { tools: { currentTool: () => tool } });
+    const session = withTasks(port, {
+      tools: { currentTool: () => toolDeclarationV1(tool) },
+    });
     const execution = await session.callTool("long");
     expect(execution.kind).toBe("task");
     expect(execution.handle).toEqual({
@@ -687,7 +691,9 @@ describe("V1 input and task behavior", () => {
         };
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
-    const session = withTasks(port, { tools: { currentTool: () => tool } });
+    const session = withTasks(port, {
+      tools: { currentTool: () => toolDeclarationV1(tool) },
+    });
     const execution = await session.callTool("notified");
     const iterator = execution.updates()[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
@@ -758,7 +764,9 @@ describe("V1 input and task behavior", () => {
         );
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
-    const session = withTasks(port, { tools: { currentTool: () => tool } });
+    const session = withTasks(port, {
+      tools: { currentTool: () => toolDeclarationV1(tool) },
+    });
     const execution = await session.callTool("x");
     await expect(execution.cancel()).rejects.toBeInstanceOf(
       TaskCancellationUnsupportedError,

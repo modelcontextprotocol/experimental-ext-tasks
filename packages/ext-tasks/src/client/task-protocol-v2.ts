@@ -1,6 +1,6 @@
 /** Generation-specific requester-side V2 task execution. */
 
-import type { JsonValue } from "../core/index.js";
+import type { JsonValue, RuntimeCodec } from "../core/index.js";
 import type { z } from "zod/v4";
 import {
   CancelTaskResultV2Schema,
@@ -33,6 +33,7 @@ import {
   dispatchWithRetry,
   responseResult,
   type ConnectedMcpSessionPort,
+  type DispatchContext,
 } from "./port.js";
 
 interface TaskExecutionV2Options<TResult, TApplicationContext> {
@@ -40,8 +41,9 @@ interface TaskExecutionV2Options<TResult, TApplicationContext> {
   readonly handle: TaskHandle & { readonly generation: "v2" };
   readonly initialTask: TaskV2;
   readonly initialDetailedTask?: DetailedTaskV2;
-  readonly resultSchema: z.ZodType<TResult>;
+  readonly resultCodec: RuntimeCodec<TResult>;
   readonly port: ConnectedMcpSessionPort;
+  readonly dispatchContext?: DispatchContext;
   readonly lifecycleSignal: AbortSignal;
   readonly onInputRequest?: ApplicationInputHandler<TApplicationContext>["handle"];
   readonly reportError: (error: Error) => void;
@@ -49,6 +51,7 @@ interface TaskExecutionV2Options<TResult, TApplicationContext> {
 
 interface V2TaskRpcContext {
   readonly port: ConnectedMcpSessionPort;
+  readonly dispatchContext?: DispatchContext;
   readonly handle: TaskHandle & { readonly generation: "v2" };
 }
 
@@ -66,24 +69,37 @@ type InputAcquisition =
   | { readonly kind: "duplicate" }
   | { readonly kind: "incompatible" };
 
-/**
- * Tracks each input key and request fingerprint. The first acquisition wins,
- * including when handling fails or is aborted; later identical requests are
- * duplicates, and different requests are incompatible.
- */
+/** Reserves input keys during handling and commits them only after update succeeds. */
 class InputRequestLedger {
-  private readonly fingerprints = new Map<string, string>();
+  private readonly fingerprints = new Map<
+    string,
+    {
+      readonly fingerprint: string;
+      readonly state: "reserved" | "committed";
+    }
+  >();
 
   acquire(inputKey: string, request: InputRequestV2): InputAcquisition {
     const fingerprint = deterministicJson(request);
-    const acquiredFingerprint = this.fingerprints.get(inputKey);
-    if (acquiredFingerprint === undefined) {
-      this.fingerprints.set(inputKey, fingerprint);
+    const acquired = this.fingerprints.get(inputKey);
+    if (acquired === undefined) {
+      this.fingerprints.set(inputKey, { fingerprint, state: "reserved" });
       return { kind: "new" };
     }
-    return acquiredFingerprint === fingerprint
+    return acquired.fingerprint === fingerprint
       ? { kind: "duplicate" }
       : { kind: "incompatible" };
+  }
+
+  commit(inputKey: string): void {
+    const acquired = this.fingerprints.get(inputKey);
+    if (acquired !== undefined)
+      this.fingerprints.set(inputKey, { ...acquired, state: "committed" });
+  }
+
+  release(inputKey: string): void {
+    if (this.fingerprints.get(inputKey)?.state === "reserved")
+      this.fingerprints.delete(inputKey);
   }
 }
 
@@ -93,6 +109,7 @@ export function createTaskExecutionV2<TResult, TApplicationContext>(
 ): TaskExecution<TResult, TApplicationContext> {
   const rpcContext: V2TaskRpcContext = {
     port: options.port,
+    dispatchContext: options.dispatchContext,
     handle: options.handle,
   };
   return new TaskExecution({
@@ -174,7 +191,7 @@ async function driveTaskExecutionV2<TResult, TApplicationContext>(args: {
     });
   return resolveTerminalTaskResult({
     task: latestDetailedTask,
-    resultSchema: options.resultSchema,
+    resultCodec: options.resultCodec,
     cancelledError: driverContext.errors.cancelled,
   });
 }
@@ -193,7 +210,7 @@ async function fetchDetailedTask(args: {
           method: "tasks/get",
           params: withTaskCapabilityV2({ taskId: rpcContext.handle.taskId }),
         },
-        signal,
+        { signal, context: rpcContext.dispatchContext },
         "observe",
       ),
     ),
@@ -202,17 +219,17 @@ async function fetchDetailedTask(args: {
 
 function resolveTerminalTaskResult<TResult>(args: {
   readonly task: DetailedTaskV2;
-  readonly resultSchema: z.ZodType<TResult>;
+  readonly resultCodec: RuntimeCodec<TResult>;
   readonly cancelledError: Error;
 }): TResult {
-  const { task, resultSchema, cancelledError } = args;
+  const { task, resultCodec, cancelledError } = args;
   switch (task.status) {
     case "cancelled":
       throw cancelledError;
     case "failed":
       throw new JsonRpcResponseError(task.error);
     case "completed":
-      return parseResult(resultSchema, task.result);
+      return parseResult(resultCodec, task.result);
     default:
       throw new Error(`Unsupported terminal task status: ${task.status}`);
   }
@@ -232,7 +249,7 @@ async function cancelTask(args: {
           method: "tasks/cancel",
           params: withTaskCapabilityV2({ taskId: rpcContext.handle.taskId }),
         },
-        signal,
+        { signal, context: rpcContext.dispatchContext },
         "mutate",
       ),
     ),
@@ -269,12 +286,11 @@ type InputHandlerOutcome =
   | { readonly kind: "skipped" };
 
 async function invokeInputHandler<TApplicationContext>(args: {
-  readonly task: DetailedTaskV2;
   readonly inputKey: string;
   readonly request: InputRequestV2;
   readonly inputContext: V2InputContext<TApplicationContext>;
 }): Promise<InputHandlerOutcome> {
-  const { task, inputKey, request, inputContext } = args;
+  const { inputKey, request, inputContext } = args;
   if (inputContext.onInputRequest === undefined)
     return request.method === "elicitation/create"
       ? { kind: "result", value: { action: "cancel" } }
@@ -284,7 +300,7 @@ async function invokeInputHandler<TApplicationContext>(args: {
       kind: "result",
       value: await inputContext.onInputRequest(projectInputRequest(request), {
         lifetime: "task-v2",
-        taskId: task.taskId,
+        taskId: inputContext.handle.taskId,
         inputKey,
         applicationContext: inputContext.applicationContext,
         signal: inputContext.inputSignal,
@@ -302,12 +318,11 @@ async function invokeInputHandler<TApplicationContext>(args: {
 }
 
 async function resolveInputRequest<TApplicationContext>(args: {
-  readonly task: DetailedTaskV2;
   readonly inputKey: string;
   readonly request: InputRequestV2;
   readonly inputContext: V2InputContext<TApplicationContext>;
 }): Promise<InputResolution | undefined> {
-  const { task, inputKey, request, inputContext } = args;
+  const { inputKey, request, inputContext } = args;
   const acquisition = inputContext.acquiredRequestLedger.acquire(
     inputKey,
     request,
@@ -321,12 +336,14 @@ async function resolveInputRequest<TApplicationContext>(args: {
   }
 
   const outcome = await invokeInputHandler({
-    task,
     inputKey,
     request,
     inputContext,
   });
-  if (outcome.kind === "skipped") return undefined;
+  if (outcome.kind === "skipped") {
+    inputContext.acquiredRequestLedger.release(inputKey);
+    return undefined;
+  }
 
   try {
     return {
@@ -340,6 +357,7 @@ async function resolveInputRequest<TApplicationContext>(args: {
     inputContext.reportError(
       error instanceof Error ? error : new Error(String(error)),
     );
+    inputContext.acquiredRequestLedger.release(inputKey);
     return undefined;
   }
 }
@@ -353,7 +371,6 @@ async function resolveAndSubmitInputRequests<TApplicationContext>(args: {
   const inputResponses: Record<string, InputResponseV2> = {};
   for (const [inputKey, request] of Object.entries(task.inputRequests)) {
     const resolution = await resolveInputRequest({
-      task,
       inputKey,
       request,
       inputContext,
@@ -367,18 +384,32 @@ async function resolveAndSubmitInputRequests<TApplicationContext>(args: {
     Object.keys(inputResponses).length === 0
   )
     return;
-  parseResult(
-    UpdateTaskResultV2Schema,
-    responseResult(
-      await dispatchWithRetry(
-        inputContext.port,
-        {
-          method: "tasks/update",
-          params: withTaskCapabilityV2({ taskId: task.taskId, inputResponses }),
-        },
-        inputContext.signal,
-        "mutate",
+  try {
+    parseResult(
+      UpdateTaskResultV2Schema,
+      responseResult(
+        await dispatchWithRetry(
+          inputContext.port,
+          {
+            method: "tasks/update",
+            params: withTaskCapabilityV2({
+              taskId: inputContext.handle.taskId,
+              inputResponses,
+            }),
+          },
+          {
+            signal: inputContext.signal,
+            context: inputContext.dispatchContext,
+          },
+          "mutate",
+        ),
       ),
-    ),
-  );
+    );
+    for (const inputKey of Object.keys(inputResponses))
+      inputContext.acquiredRequestLedger.commit(inputKey);
+  } catch (error) {
+    for (const inputKey of Object.keys(inputResponses))
+      inputContext.acquiredRequestLedger.release(inputKey);
+    throw error;
+  }
 }
