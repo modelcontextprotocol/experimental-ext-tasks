@@ -2,19 +2,52 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  check-schema:
+  validate:
+    name: Validate repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - run: npm ci
-      - run: npm run check:schema:ts
-      - run: npm run check:schema:json
-      - run: npm run docs:build
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check schemas, package, and packed consumers
+        run: npm run check
+      - name: Build documentation
+        run: npm run docs:build
+
+  peer-range:
+    name: Peer range (${{ matrix.client-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        client-version: ["2.0.0", "2"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build package
+        run: npm run build:package
+      - name: Check packed package against client peer endpoint
+        run: npm run check:peer-range -- ${{ matrix.client-version }}

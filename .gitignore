@@ -5,6 +5,7 @@ node_modules/
 .claude/
 .jj/
 *.tsbuildinfo
+*.tgz
 dist/
 schema/**/generated/
 .vitepress/cache

@@ -1,11 +1,22 @@
 {
-  "name": "@modelcontextprotocol/ext-tasks",
+  "name": "@modelcontextprotocol/ext-tasks-repository",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "description": "MCP Tasks Extension - extension for task management in the Model Context Protocol",
   "license": "Apache-2.0",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
+    "build": "npm run build:package",
+    "build:package": "npm run build --workspace @modelcontextprotocol/ext-tasks",
+    "check": "npm run check:schema && npm run check:package && npm run check:pack",
+    "check:package": "npm run check --workspace @modelcontextprotocol/ext-tasks",
+    "check:pack": "npm run check:package --workspace @modelcontextprotocol/ext-tasks",
+    "pack:package": "npm pack --workspace @modelcontextprotocol/ext-tasks",
+    "test": "npm run test --workspace @modelcontextprotocol/ext-tasks",
+    "test:watch": "npm run test:watch --workspace @modelcontextprotocol/ext-tasks",
     "generate:schemas": "tsx scripts/generate-schemas.ts",
     "snapshot:schema": "tsx scripts/snapshot-schema.ts",
     "fetch:spec-schema": "tsx scripts/fetch-spec-schema.ts",
@@ -14,7 +25,8 @@
     "check:schema:json": "tsx scripts/generate-schemas.ts --check",
     "docs:dev": "vitepress dev",
     "docs:build": "vitepress build",
-    "docs:preview": "vitepress preview"
+    "docs:preview": "vitepress preview",
+    "check:peer-range": "node packages/ext-tasks/scripts/check-peer-range.mjs"
   },
   "devDependencies": {
     "mermaid": "^11.17.0",
@@ -23,6 +35,7 @@
     "typescript": "^5.0.0",
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17",
-    "zod": "^4.4.3"
+    "vitest": "^5.0.0",
+    "zod": "^4.5.4"
   }
 }
