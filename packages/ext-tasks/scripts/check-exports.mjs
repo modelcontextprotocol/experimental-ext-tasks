@@ -383,7 +383,6 @@ async function checkPackedContract() {
       process.platform === "win32" ? "npm.cmd" : "npm",
       [
         "install",
-        "--offline",
         "--ignore-scripts",
         "--dry-run=false",
         "--no-audit",
