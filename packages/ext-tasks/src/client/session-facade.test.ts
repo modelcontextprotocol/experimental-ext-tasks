@@ -12,17 +12,17 @@ const task = (id: string, status = "working") => ({
 });
 
 describe("task session facade", () => {
-  it("owns immediate call registration and settlement", async () => {
+  it("settles an immediate execution", async () => {
     const port = new FakePort();
     port.response = { kind: "result", result: { content: [] } };
     const session = withTasks(port, {
       tools: { currentTool: () => undefined },
     });
 
-    await expect(session.callToolAndSettle("echo")).resolves.toEqual({
+    const execution = await session.callTool("echo");
+    await expect(execution.settle()).resolves.toEqual({
       outcome: { status: "completed", result: { content: [] } },
       lastTask: undefined,
-      handle: undefined,
     });
     await session.close();
   });
@@ -84,11 +84,12 @@ describe("task session facade", () => {
       tools: { currentTool: () => undefined },
     });
 
-    const settled = await session.callToolAndSettle("echo");
-    expect(settled.handle).toEqual({
+    const execution = await session.callTool("echo");
+    expect(execution.handle).toEqual({
       taskId: "owned",
       operation: "tools/call",
     });
+    const settled = await execution.settle();
     expect(settled.outcome.status).toBe("completed");
     expect(reads).toBeGreaterThan(0);
     await session.close();

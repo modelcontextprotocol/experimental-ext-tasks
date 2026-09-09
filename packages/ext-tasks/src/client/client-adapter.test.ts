@@ -14,6 +14,10 @@ import {
   toolDeclarationFromMcpTool,
   withTasks,
 } from "./index.js";
+import type {
+  ClientSessionPortOptions,
+  CreateTaskSessionFromClientOptions,
+} from "./sdk-client-adapter.js";
 import { ClientSessionPort } from "./sdk-client-adapter.js";
 
 const client = () => new Client({ name: "test", version: "1" });
@@ -37,6 +41,37 @@ const v2RequestFraming = {
 } as const;
 
 describe("Client adapter", () => {
+  it("requires V2 raw dispatch and framing together at the type boundary", () => {
+    const withoutRaw: ClientSessionPortOptions = {};
+    const withRaw: ClientSessionPortOptions = {
+      rawDispatch: vi.fn(),
+      v2RequestFraming,
+    };
+    // @ts-expect-error -- raw dispatch without framing is not a valid adapter configuration.
+    const missingFraming: ClientSessionPortOptions = { rawDispatch: vi.fn() };
+    // @ts-expect-error -- framing without raw dispatch is not a valid adapter configuration.
+    const missingDispatch: ClientSessionPortOptions = { v2RequestFraming };
+    // @ts-expect-error -- the owned session factory also requires framing with raw dispatch.
+    const ownedMissingFraming: CreateTaskSessionFromClientOptions = {
+      endpointId: "owned",
+      rawDispatch: vi.fn(),
+    };
+    // @ts-expect-error -- the owned session factory also requires raw dispatch with framing.
+    const ownedMissingDispatch: CreateTaskSessionFromClientOptions = {
+      endpointId: "owned",
+      v2RequestFraming,
+    };
+
+    expect([
+      withoutRaw,
+      withRaw,
+      missingFraming,
+      missingDispatch,
+      ownedMissingFraming,
+      ownedMissingDispatch,
+    ]).toHaveLength(6);
+  });
+
   it("dispatches with an explicit schema and signal, preserving full protocol errors", async () => {
     const sdk = client();
     const request = vi.spyOn(sdk, "request");
@@ -401,6 +436,46 @@ describe("Client adapter", () => {
       data: { reason: "x" },
     });
     disposeError();
+  });
+
+  it("preserves SDK input handlers alongside the Tasks fallback", () => {
+    class InspectableClient extends Client {
+      requestHandler(method: string): unknown {
+        return this._getRequestHandler(method);
+      }
+    }
+
+    const sdk = new InspectableClient(
+      { name: "test", version: "1" },
+      {
+        capabilities: {
+          elicitation: { form: {} },
+          sampling: {},
+        },
+      },
+    );
+    sdk.setRequestHandler("elicitation/create", () => ({
+      action: "accept",
+    }));
+    sdk.setRequestHandler("sampling/createMessage", () => ({
+      model: "test-model",
+      role: "assistant",
+      content: { type: "text", text: "sampled" },
+    }));
+    const elicitationHandler = sdk.requestHandler("elicitation/create");
+    const samplingHandler = sdk.requestHandler("sampling/createMessage");
+
+    const port = createSessionPortFromClient(sdk, "coexisting-input");
+
+    expect(sdk.requestHandler("elicitation/create")).toBe(elicitationHandler);
+    expect(sdk.requestHandler("sampling/createMessage")).toBe(samplingHandler);
+    expect(sdk.fallbackRequestHandler).toBeTypeOf("function");
+
+    port[Symbol.dispose]();
+
+    expect(sdk.requestHandler("elicitation/create")).toBe(elicitationHandler);
+    expect(sdk.requestHandler("sampling/createMessage")).toBe(samplingHandler);
+    expect(sdk.fallbackRequestHandler).toBeUndefined();
   });
 
   it("chains prior fallbacks, forwards notifications, invalidates on close, and cleans up", async () => {

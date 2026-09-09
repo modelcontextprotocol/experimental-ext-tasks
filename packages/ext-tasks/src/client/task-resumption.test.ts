@@ -1,5 +1,5 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { TaskId } from "../core/index.js";
 import {
   DispatchError,
@@ -29,6 +29,56 @@ describe("task reference resumption", () => {
     const execution = await session.callTool("immediate");
     expect(execution.kind).toBe("immediate");
     expect("serializeReference" in execution).toBe(false);
+    await session.close();
+  });
+
+  it("persists a task reference before detaching during handoff", async () => {
+    const port = new FakePort(
+      { generation: "v2", capabilities: {} },
+      "handoff-endpoint",
+    );
+    port.dispatchHandler = async (request, options) => {
+      const method = expectRecord(request).method;
+      if (method === "tools/call")
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "task",
+            taskId: "handoff-task",
+            status: "working",
+            createdAt: "a",
+            lastUpdatedAt: "a",
+            ttlMs: null,
+          }),
+        };
+      return new Promise((_resolve, reject) =>
+        options?.signal?.addEventListener(
+          "abort",
+          () => {
+            reject(asError(options.signal?.reason));
+          },
+          { once: true },
+        ),
+      );
+    };
+    const session = withTasks(port, {
+      tools: { currentTool: () => undefined },
+    });
+    const execution = await session.callTool("handoff");
+    expect(execution.kind).toBe("task");
+    if (execution.kind !== "task") throw new Error("expected task");
+    const detach = vi.spyOn(execution, "detach");
+    const persistenceError = new Error("storage unavailable");
+
+    await expect(
+      execution.handoff(() => Promise.reject(persistenceError)),
+    ).rejects.toBe(persistenceError);
+    expect(detach).not.toHaveBeenCalled();
+
+    const persist = vi.fn().mockResolvedValue(undefined);
+    await execution.handoff(persist);
+    expect(persist).toHaveBeenCalledWith(execution.serializeReference());
+    expect(detach).toHaveBeenCalledOnce();
     await session.close();
   });
 

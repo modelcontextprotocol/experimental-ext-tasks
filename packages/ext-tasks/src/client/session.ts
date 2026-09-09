@@ -29,8 +29,6 @@ import {
 import type { TaskController, TaskControllerOptions } from "./api.js";
 import type { TaskRecoveryOptions, TaskSessionEndpointId } from "./api.js";
 import type {
-  CallToolAndSettleOptions,
-  CallToolAndSettleResult,
   SerializedTaskReference,
   TaskEnabledSession,
   TaskListPage,
@@ -268,21 +266,6 @@ class PortTaskEnabledSession<
       operationLifecycle.signal,
       () => {},
     ).cancel(signal);
-  }
-
-  async callToolAndSettle<TResult = CallToolResultV1 | CallToolResultV2>(
-    name: string,
-    params?: Readonly<Record<string, JsonValue>>,
-    options: CallToolAndSettleOptions<TResult, TApplicationContext> = {},
-  ): Promise<CallToolAndSettleResult<TResult>> {
-    const { onEvent, close, ...callOptions } = options;
-    const execution = await this.callTool(name, params, callOptions);
-    const settlement = await execution.settle({
-      signal: options.signal,
-      close,
-      onEvent,
-    });
-    return { ...settlement, handle: execution.handle };
   }
 
   async callTool<TResult = CallToolResultV1 | CallToolResultV2>(

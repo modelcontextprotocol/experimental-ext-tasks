@@ -325,18 +325,6 @@ export interface ToolExecutionSettlement<TResult> {
   readonly lastTask: TaskView | undefined;
 }
 
-export interface CallToolAndSettleOptions<TResult, TApplicationContext = void>
-  extends
-    ToolCallOptions<TResult, TApplicationContext>,
-    ToolExecutionSettleOptions<TResult> {}
-
-/** Fully-owned tool-call lifecycle result. */
-export interface CallToolAndSettleResult<
-  TResult,
-> extends ToolExecutionSettlement<TResult> {
-  readonly handle: TaskHandle | undefined;
-}
-
 export interface ToolExecutionCommon<TResult, TApplicationContext = void> {
   readonly applicationContext: TApplicationContext;
   readonly declaration: ToolDeclaration | undefined;
@@ -369,6 +357,10 @@ export type ToolExecution<TResult, TApplicationContext = void> =
       readonly kind: "task";
       readonly handle: TaskHandle;
       serializeReference(): SerializedTaskReference;
+      /** Persists a resumable reference, then releases local ownership. */
+      handoff(
+        persist: (reference: SerializedTaskReference) => void | Promise<void>,
+      ): Promise<void>;
     });
 
 export class TaskUpdatesAlreadyAcquiredError extends Error {
@@ -502,11 +494,6 @@ export interface TaskEnabledSession<TApplicationContext = void> {
     params?: Readonly<Record<string, JsonValue>>,
     options?: ToolCallOptions<TResult, TApplicationContext>,
   ): Promise<ToolExecution<TResult, TApplicationContext>>;
-  callToolAndSettle<TResult = CallToolResultV1 | CallToolResultV2>(
-    name: string,
-    params?: Readonly<Record<string, JsonValue>>,
-    options?: CallToolAndSettleOptions<TResult, TApplicationContext>,
-  ): Promise<CallToolAndSettleResult<TResult>>;
   resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
     reference: SerializedTaskReference,
     options?: TaskRecoveryOptions<TResult, TApplicationContext>,

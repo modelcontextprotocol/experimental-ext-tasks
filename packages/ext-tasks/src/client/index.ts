@@ -20,8 +20,6 @@ export {
 } from "./api.js";
 export { withRelatedTaskMetadata } from "./api.js";
 export type {
-  CallToolAndSettleOptions,
-  CallToolAndSettleResult,
   ApplicationCreateMessageResult,
   ApplicationElicitResult,
   ApplicationInputHandler,

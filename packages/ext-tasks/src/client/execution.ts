@@ -266,6 +266,13 @@ export class TaskExecution<
     return { endpointId: this.endpointId, ...this.internalHandle };
   }
 
+  async handoff(
+    persist: (reference: SerializedTaskReference) => void | Promise<void>,
+  ): Promise<void> {
+    await persist(this.serializeReference());
+    await this.detach();
+  }
+
   onNotification(snapshot: InternalTaskSnapshot): void {
     if (this.closed || snapshot.generation !== this.internalHandle.generation)
       return;

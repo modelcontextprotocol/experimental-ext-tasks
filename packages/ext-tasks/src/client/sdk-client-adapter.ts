@@ -98,19 +98,29 @@ export interface V2RequestFraming {
   readonly clientCapabilities: Readonly<Record<string, JsonValue>>;
 }
 
-/** Options for adapting an SDK Client. */
-export interface ClientSessionPortOptions {
-  readonly rawDispatch?: RawClientDispatch;
-  /** Required with rawDispatch for V2; copied and deeply frozen at creation. */
-  readonly v2RequestFraming?: V2RequestFraming;
+/** Options for adapting an SDK Client without a V2 raw request path. */
+interface ClientSessionPortWithoutRawDispatch {
+  readonly rawDispatch?: undefined;
+  readonly v2RequestFraming?: undefined;
 }
 
-/** Options for creating an owned task-enabled session from an MCP SDK Client. */
-export interface CreateTaskSessionFromClientOptions<TApplicationContext = void>
-  extends WithTasksOptions<TApplicationContext>, ClientSessionPortOptions {
-  /** Opaque stable identity used to scope serialized task references. */
-  readonly endpointId: string;
+/** Options for adapting an SDK Client with the complete V2 raw request path. */
+interface ClientSessionPortWithRawDispatch {
+  readonly rawDispatch: RawClientDispatch;
+  readonly v2RequestFraming: V2RequestFraming;
 }
+
+/** Options for adapting an SDK Client. V2 raw dispatch and framing are supplied together. */
+export type ClientSessionPortOptions =
+  ClientSessionPortWithoutRawDispatch | ClientSessionPortWithRawDispatch;
+
+/** Options for creating an owned task-enabled session from an MCP SDK Client. */
+export type CreateTaskSessionFromClientOptions<TApplicationContext = void> =
+  WithTasksOptions<TApplicationContext> &
+    ClientSessionPortOptions & {
+      /** Opaque stable identity used to scope serialized task references. */
+      readonly endpointId: string;
+    };
 
 function requiresRawDispatch(
   capabilities: SessionTaskCapabilities,
@@ -473,12 +483,19 @@ export function createTaskSessionFromClient<TApplicationContext = void>(
   client: Client,
   options: CreateTaskSessionFromClientOptions<TApplicationContext>,
 ): TaskEnabledSession<TApplicationContext> {
-  const { endpointId, rawDispatch, v2RequestFraming, ...sessionOptions } =
-    options;
-  const port = createSessionPortFromClient(client, endpointId, {
-    rawDispatch,
-    v2RequestFraming,
-  });
+  const adapterOptions: ClientSessionPortOptions =
+    options.rawDispatch === undefined
+      ? {}
+      : {
+          rawDispatch: options.rawDispatch,
+          v2RequestFraming: options.v2RequestFraming,
+        };
+  const sessionOptions: WithTasksOptions<TApplicationContext> = options;
+  const port = createSessionPortFromClient(
+    client,
+    options.endpointId,
+    adapterOptions,
+  );
   try {
     return withOwnedTasks(port, sessionOptions, () => {
       port[Symbol.dispose]();
