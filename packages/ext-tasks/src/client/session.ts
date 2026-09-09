@@ -338,7 +338,12 @@ class PortTaskEnabledSession<
           ? {}
           : { ttl: options.task.retentionMs };
     const dispatchContext =
-      options.headers === undefined ? undefined : { headers: options.headers };
+      options.headers === undefined && options.requestTimeoutMs === undefined
+        ? undefined
+        : {
+            headers: options.headers,
+            requestTimeoutMs: options.requestTimeoutMs,
+          };
     const executionId = nextExecutionIdentifier();
     this.ordinaryInputCandidates.set(executionId, {
       lifetime: "basic",

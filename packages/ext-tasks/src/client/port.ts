@@ -46,6 +46,8 @@ export interface IncomingServerRequest {
 export interface DispatchContext {
   /** Additional transport headers. HTTP transports send these on this request. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** Per-request timeout in milliseconds. */
+  readonly requestTimeoutMs?: number;
 }
 
 /** Options for one port dispatch. */

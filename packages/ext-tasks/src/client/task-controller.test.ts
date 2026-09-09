@@ -38,7 +38,7 @@ function methods(port: FakePort): unknown[] {
 }
 
 describe("manual task controller", () => {
-  it("uses V1 get, result, and cancel requests and preserves headers", async () => {
+  it("uses V1 get, result, and cancel requests and preserves context", async () => {
     const port = new FakePort({
       generation: "v1",
       capabilities: { requests: { tools: { call: {} } }, cancel: {} },
@@ -52,6 +52,7 @@ describe("manual task controller", () => {
     const session = withTasks(port, { tools });
     const controller = session.task(taskId("manual-v1"), {
       headers: { authorization: "Bearer test" },
+      requestTimeoutMs: 4_000,
     });
 
     await expect(controller.snapshot()).resolves.toMatchObject({
@@ -73,6 +74,7 @@ describe("manual task controller", () => {
       expect(dispatchOptions?.signal?.aborted).toBe(false);
       expect(dispatchOptions?.context).toEqual({
         headers: { authorization: "Bearer test" },
+        requestTimeoutMs: 4_000,
       });
     }
     await session.close();

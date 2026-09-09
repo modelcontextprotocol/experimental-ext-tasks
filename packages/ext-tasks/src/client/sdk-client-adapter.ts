@@ -386,6 +386,9 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
           ...(options.context?.headers === undefined
             ? {}
             : { headers: options.context.headers }),
+          ...(options.context?.requestTimeoutMs === undefined
+            ? {}
+            : { timeout: options.context.requestTimeoutMs }),
         },
       );
       return { kind: "result", result };

@@ -414,11 +414,15 @@ export interface ToolCallOptions<TResult, TApplicationContext = void> {
   readonly metadata?: Readonly<Record<string, JsonValue>>;
   /** Additional headers for the initiating call and task follow-up requests. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** Per-request timeout in milliseconds for the initiating call and task follow-ups. */
+  readonly requestTimeoutMs?: number;
 }
 
 export interface TaskControllerOptions {
   /** Additional headers preserved on every task request. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** Per-request timeout in milliseconds preserved on every task request. */
+  readonly requestTimeoutMs?: number;
 }
 
 export interface TaskResultOptions<TResult> {

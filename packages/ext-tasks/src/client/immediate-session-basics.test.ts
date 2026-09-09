@@ -158,6 +158,7 @@ describe("immediate and session basics", () => {
     const execution = await session.callTool("x", undefined, {
       task: { retentionMs: 5000 },
       headers: { "x-routing-key": "route-task" },
+      requestTimeoutMs: 3_000,
     });
     expect(port.requests[0]).toEqual({
       method: "tools/call",
@@ -178,9 +179,12 @@ describe("immediate and session basics", () => {
       method: "tasks/cancel",
       params: { taskId: "task-ttl" },
     });
-    expect(port.dispatchOptions[1]?.context?.headers).toEqual({
-      "x-routing-key": "route-task",
-    });
+    const expectedContext = {
+      headers: { "x-routing-key": "route-task" },
+      requestTimeoutMs: 3_000,
+    };
+    expect(port.dispatchOptions[0]?.context).toEqual(expectedContext);
+    expect(port.dispatchOptions[1]?.context).toEqual(expectedContext);
     await session.close();
   });
 

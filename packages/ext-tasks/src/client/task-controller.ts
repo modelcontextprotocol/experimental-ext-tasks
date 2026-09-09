@@ -64,7 +64,12 @@ export function createTaskController(
     throw new Error("Task management is not supported by this session");
   const generation = capabilities.generation;
   const context: DispatchContext | undefined =
-    options.headers === undefined ? undefined : { headers: options.headers };
+    options.headers === undefined && options.requestTimeoutMs === undefined
+      ? undefined
+      : {
+          headers: options.headers,
+          requestTimeoutMs: options.requestTimeoutMs,
+        };
   const rpc: TaskRpcV1 | TaskRpcV2 =
     generation === "v1"
       ? createTaskRpc(generation, { port, taskId, context })

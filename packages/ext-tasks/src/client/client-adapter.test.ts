@@ -62,18 +62,24 @@ describe("Client adapter", () => {
     });
   });
 
-  it("forwards headers through SDK request options", async () => {
+  it("forwards headers and request timeout through SDK request options", async () => {
     const sdk = client();
     const request = vi
       .spyOn(sdk, "request")
       .mockResolvedValueOnce({ ok: true });
-    const port = createSessionPortFromClient(sdk, "headers");
+    const port = createSessionPortFromClient(sdk, "request-context");
     await port.dispatch(
       { method: "custom/method" },
-      { context: { headers: { "x-trace": "trace-1" } } },
+      {
+        context: {
+          headers: { "x-trace": "trace-1" },
+          requestTimeoutMs: 2_500,
+        },
+      },
     );
     expect(request.mock.calls[0]?.[2]).toEqual({
       headers: { "x-trace": "trace-1" },
+      timeout: 2_500,
     });
   });
 
