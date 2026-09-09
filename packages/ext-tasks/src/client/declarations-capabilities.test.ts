@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ToolV1 } from "../core/v1/index.js";
-import { DispatchError, toolDeclarationV1, withTasks } from "./index.js";
+import {
+  DispatchError,
+  TaskRetentionUnsupportedError,
+  toolDeclaration,
+  withTasks,
+} from "./index.js";
 import type { JsonRpcResponse } from "./index.js";
 import {
   FakePort,
@@ -275,13 +279,14 @@ describe("declarations and capabilities", () => {
     expect(removeListener).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects generation-mismatched declarations without leaking call listeners", async () => {
+  it("projects one neutral declaration without leaking call listeners", async () => {
     const port = new FakePort({ generation: "v2", capabilities: {} });
-    const v1Tool: ToolV1 = {
+    port.response = { kind: "result", result: { content: [] } };
+    const declaration = toolDeclaration({
       name: "x",
       inputSchema: { type: "object" },
-      execution: { taskSupport: "required" },
-    };
+      taskSupport: "required",
+    });
     const callController = new AbortController();
     const addListener = vi.spyOn(callController.signal, "addEventListener");
     const removeListener = vi.spyOn(
@@ -289,18 +294,52 @@ describe("declarations and capabilities", () => {
       "removeEventListener",
     );
     const session = withTasks(port, {
-      tools: { currentTool: () => toolDeclarationV1(v1Tool) },
+      tools: { currentTool: () => declaration },
     });
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await expect(
-        session.callTool("x", undefined, { signal: callController.signal }),
-      ).rejects.toThrow(
-        "V1 tool declaration is incompatible with the V2 session",
-      );
-    }
+    await session.callTool("x", undefined, { signal: callController.signal });
+    expect(port.requests).toHaveLength(1);
+    expect(declaration).not.toHaveProperty("generation");
+    expect(addListener).toHaveBeenCalledTimes(1);
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    await session.close();
+  });
+
+  it("retains neutral task support while omitting the absent V2 wire field", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    port.response = { kind: "result", result: { content: [] } };
+    const declaration = toolDeclaration({
+      name: "x",
+      inputSchema: { type: "object" },
+      taskSupport: "required",
+    });
+    const session = withTasks(port, {
+      tools: { currentTool: () => declaration },
+    });
+    const execution = await session.callTool("x", undefined, {
+      task: { retentionMs: 5000, retention: "best-effort" },
+    });
+    const params = expectRecord(port.requests[0]).params;
+    expect(params).not.toHaveProperty("execution");
+    for (const field of ["ttl", "ttlMs", "retentionMs"])
+      expect(params).not.toHaveProperty(`task.${field}`);
+    expect(execution.declaration?.taskSupport).toBe("required");
+    await session.close();
+  });
+
+  it("rejects strict requested retention before unsupported dispatch", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () =>
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
+      },
+    });
+    await expect(
+      session.callTool("x", undefined, {
+        task: { retentionMs: 5000, retention: "require-capability" },
+      }),
+    ).rejects.toBeInstanceOf(TaskRetentionUnsupportedError);
     expect(port.requests).toEqual([]);
-    expect(addListener).toHaveBeenCalledTimes(3);
-    expect(removeListener).toHaveBeenCalledTimes(3);
     await session.close();
   });
 });

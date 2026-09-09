@@ -1,17 +1,30 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { taskId } from "../core/index.js";
 import {
   ProtocolDecodeError,
   type JsonValue,
   type RuntimeCodec,
 } from "../core/index.js";
 import {
+  createApplicationInputHandler,
+  createTaskSessionEndpointId,
   DispatchError,
   JsonRpcResponseError,
-  toolDeclarationV1,
+  resultFromTaskOutcome,
+  taskViewFromExecutionEvent,
+  TaskCancelledError,
+  TaskFailedError,
+  toolDeclaration,
+  withRelatedTaskMetadata,
   withTasks,
 } from "./index.js";
+import {
+  legacyResult,
+  legacyUpdates,
+} from "../../test-support/client/semantic.js";
 import { FakePort, asJson } from "../../test-support/client/fake-port.js";
+import { projectTask } from "./internal.js";
 
 describe("immediate and session basics", () => {
   it("dispatches a non-task call and caches the decoded result", async () => {
@@ -40,9 +53,13 @@ describe("immediate and session basics", () => {
           const first = execution.result();
           const second = execution.result();
           expect(first).toBe(second);
-          await expect(first).resolves.toEqual(result);
+          await expect(first).resolves.toEqual({
+            status: "completed",
+            result,
+          });
           const updates: unknown[] = [];
-          for await (const update of execution.updates()) updates.push(update);
+          for await (const update of legacyUpdates(execution))
+            updates.push(update);
           expect(updates).toEqual([]);
           await execution.cancel();
           expect(port.requests).toHaveLength(1);
@@ -50,6 +67,36 @@ describe("immediate and session basics", () => {
         },
       ),
     );
+  });
+
+  it("settles immediate results and exposes immutable related-task metadata", async () => {
+    const port = new FakePort();
+    port.response = { kind: "result", result: { content: [] } };
+    const declaration = toolDeclaration({
+      name: "x",
+      inputSchema: { type: "object" },
+    });
+    const session = withTasks(port, {
+      tools: { currentTool: () => undefined },
+    });
+    const execution = await session.callTool("x", undefined, { declaration });
+    await expect(execution.settle()).resolves.toEqual({
+      outcome: { status: "completed", result: { content: [] } },
+      lastTask: undefined,
+    });
+    expect(execution.declaration).toBe(declaration);
+    const original = { trace: "one", unknown: { nested: true } } as const;
+    const metadata = withRelatedTaskMetadata(original, {
+      taskId: taskId("related"),
+    });
+    expect(metadata).toEqual({
+      ...original,
+      "io.modelcontextprotocol/related-task": { taskId: "related" },
+    });
+    expect(original).toEqual({ trace: "one", unknown: { nested: true } });
+    expect(session.endpointId).toBe(port.endpointId);
+    expect(session.capabilities.inventory).toBe("unsupported");
+    await session.close();
   });
 
   it("preserves call metadata and transport headers", async () => {
@@ -101,7 +148,7 @@ describe("immediate and session basics", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV1({
+          toolDeclaration({
             name: "x",
             inputSchema: { type: "object" },
             execution: { taskSupport: "required" },
@@ -109,7 +156,7 @@ describe("immediate and session basics", () => {
       },
     });
     const execution = await session.callTool("x", undefined, {
-      taskTtl: 5000,
+      task: { retentionMs: 5000 },
       headers: { "x-routing-key": "route-task" },
     });
     expect(port.requests[0]).toEqual({
@@ -165,7 +212,7 @@ describe("immediate and session basics", () => {
       applicationContext: "ctx",
     });
     expect(execution.applicationContext).toBe("ctx");
-    await expect(execution.result()).resolves.toBe("42");
+    await expect(legacyResult(execution)).resolves.toBe("42");
 
     port.response = { kind: "result", result: { answer: "invalid" } };
     await expect(
@@ -276,10 +323,158 @@ describe("immediate and session basics", () => {
       tools: { currentTool: () => undefined },
     });
     const execution = await session.callTool("x");
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       content: [],
       task: "application-data",
     });
     await session.close();
+  });
+
+  it("creates canonical endpoint identities from host descriptors", async () => {
+    const left = await createTaskSessionEndpointId("transport", {
+      z: 1,
+      a: { d: 4, c: 3 },
+    });
+    const right = await createTaskSessionEndpointId("transport", {
+      a: { c: 3, d: 4 },
+      z: 1,
+    });
+    expect(left).toBe(
+      "transport:v1:sha256:9609398a798ffd5d25bf2ad53bb05d312094237c7c818dd99951e600396fcc64",
+    );
+    expect(right).toBe(left);
+    await expect(createTaskSessionEndpointId("", {})).rejects.toThrow(
+      "namespace",
+    );
+  });
+
+  it("orders canonical endpoint keys by their serialized spelling", async () => {
+    const serializedQuote = JSON.stringify('"');
+    const canonical = `{${serializedQuote}:1,"a":2}`;
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(canonical),
+    );
+    const expected = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    await expect(
+      createTaskSessionEndpointId("escaped", { a: 2, '"': 1 }),
+    ).resolves.toBe(`escaped:v1:sha256:${expected}`);
+  });
+
+  it("projects task aliases and unwraps semantic outcomes", () => {
+    const v1 = projectTask({
+      generation: "v1",
+      task: {
+        taskId: "v1",
+        status: "working",
+        createdAt: "now",
+        lastUpdatedAt: "now",
+        ttl: 42,
+        pollInterval: 7,
+      },
+    });
+    const v2 = projectTask({
+      generation: "v2",
+      task: {
+        taskId: "v2",
+        status: "working",
+        createdAt: "now",
+        lastUpdatedAt: "now",
+        ttlMs: null,
+        pollIntervalMs: 9,
+      },
+    });
+    expect(v1).toMatchObject({
+      retentionMs: 42,
+      ttl: 42,
+      suggestedPollIntervalMs: 7,
+      pollInterval: 7,
+    });
+    expect(v2).toMatchObject({
+      retentionMs: null,
+      ttl: null,
+      suggestedPollIntervalMs: 9,
+      pollInterval: 9,
+    });
+    expect(taskViewFromExecutionEvent({ type: "task", task: v1 })).toBe(v1);
+    expect(
+      taskViewFromExecutionEvent({
+        type: "outcome",
+        outcome: { status: "completed", result: 3, task: v2 },
+      }),
+    ).toBe(v2);
+    expect(resultFromTaskOutcome({ status: "completed", result: 3 })).toBe(3);
+    const failure = new TaskFailedError("failed", {
+      code: 7,
+      data: { why: true },
+    });
+    expect(() =>
+      resultFromTaskOutcome({ status: "failed", error: failure }),
+    ).toThrow(failure);
+    expect(() => resultFromTaskOutcome({ status: "cancelled" })).toThrow(
+      TaskCancelledError,
+    );
+  });
+
+  it("routes typed application callbacks and adds task metadata", async () => {
+    const seen: unknown[] = [];
+    const handler = createApplicationInputHandler<{ trace: string }>({
+      elicitation: (request, context) => {
+        seen.push({ request, context });
+        return { action: "accept", content: { ok: true } };
+      },
+      sampling: () => ({
+        model: "test",
+        role: "assistant",
+        content: { type: "text", text: "sampled" },
+      }),
+      roots: () => ({ roots: [{ uri: "file:///tmp" }] }),
+    });
+    const result = await handler(
+      {
+        kind: "elicitation",
+        params: { _meta: { trace: "kept" }, message: "continue?" },
+      },
+      {
+        scope: "task",
+        delivery: "task-update",
+        taskId: taskId("task-input"),
+        applicationContext: { trace: "ctx" },
+      },
+    );
+    expect(result).toEqual({ action: "accept", content: { ok: true } });
+    expect(seen).toEqual([
+      {
+        request: {
+          kind: "elicitation",
+          params: {
+            message: "continue?",
+            _meta: {
+              trace: "kept",
+              "io.modelcontextprotocol/related-task": { taskId: "task-input" },
+            },
+          },
+        },
+        context: {
+          scope: "task",
+          delivery: "task-update",
+          taskId: "task-input",
+          applicationContext: { trace: "ctx" },
+        },
+      },
+    ]);
+    await expect(
+      handler(
+        { kind: "roots" },
+        {
+          scope: "request",
+          delivery: "peer-request",
+          inputId: "roots-1",
+          applicationContext: { trace: "ctx" },
+        },
+      ),
+    ).resolves.toEqual({ roots: [{ uri: "file:///tmp" }] });
   });
 });

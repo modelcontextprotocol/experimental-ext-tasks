@@ -3,42 +3,40 @@
 import type { JsonValue, RuntimeCodec } from "../core/index.js";
 import type { z } from "zod/v4";
 import {
-  CancelTaskResultV2Schema,
   CreateMessageResultV2Schema,
   ElicitResultV2Schema,
-  GetTaskResultV2Schema,
   ListRootsResultV2Schema,
-  UpdateTaskResultV2Schema,
-  withTaskCapabilityV2,
   type DetailedTaskV2,
   type InputRequestV2,
   type InputResponseV2,
   type TaskV2,
 } from "../core/v2/index.js";
-import {
-  JsonRpcResponseError,
-  type ApplicationInputHandler,
-  type ApplicationInputRequest,
-  type TaskHandle,
+import { JsonRpcResponseError } from "./api.js";
+import type {
+  ApplicationInputHandler,
+  ApplicationInputRequest,
+  TaskSessionEndpointId,
+  ToolDeclaration,
 } from "./api.js";
+import type { InternalTaskHandle } from "./internal.js";
 import {
-  DEFAULT_TASK_POLL_INTERVAL_MS,
   TaskExecution,
   deterministicJson,
+  taskPollInterval,
   terminalStatus,
-  type TaskDriverContext,
 } from "./execution.js";
-import {
-  parseResult,
-  dispatchWithRetry,
-  responseResult,
-  type ConnectedMcpSessionPort,
-  type DispatchContext,
+import type { TaskDriverContext } from "./execution.js";
+import { createTaskRpc, parseResult } from "./port.js";
+import type {
+  ConnectedMcpSessionPort,
+  DispatchContext,
+  TaskRpcV2,
 } from "./port.js";
 
 interface TaskExecutionV2Options<TResult, TApplicationContext> {
   readonly applicationContext: TApplicationContext;
-  readonly handle: TaskHandle & { readonly generation: "v2" };
+  readonly handle: InternalTaskHandle & { readonly generation: "v2" };
+  readonly declaration?: ToolDeclaration;
   readonly initialTask: TaskV2;
   readonly initialDetailedTask?: DetailedTaskV2;
   readonly resultCodec: RuntimeCodec<TResult>;
@@ -50,9 +48,8 @@ interface TaskExecutionV2Options<TResult, TApplicationContext> {
 }
 
 interface V2TaskRpcContext {
-  readonly port: ConnectedMcpSessionPort;
-  readonly dispatchContext?: DispatchContext;
-  readonly handle: TaskHandle & { readonly generation: "v2" };
+  readonly rpc: TaskRpcV2;
+  readonly handle: InternalTaskHandle & { readonly generation: "v2" };
 }
 
 interface V2InputContext<TApplicationContext> extends V2TaskRpcContext {
@@ -108,18 +105,22 @@ export function createTaskExecutionV2<TResult, TApplicationContext>(
   options: TaskExecutionV2Options<TResult, TApplicationContext>,
 ): TaskExecution<TResult, TApplicationContext> {
   const rpcContext: V2TaskRpcContext = {
-    port: options.port,
-    dispatchContext: options.dispatchContext,
+    rpc: createTaskRpc("v2", {
+      port: options.port,
+      taskId: options.handle.taskId,
+      context: options.dispatchContext,
+    }),
     handle: options.handle,
   };
   return new TaskExecution({
     applicationContext: options.applicationContext,
+    declaration: options.declaration,
     handle: options.handle,
-    endpointId: options.port.endpointId,
+    endpointId: options.port.endpointId as TaskSessionEndpointId,
     initialSnapshot: { generation: "v2", task: options.initialTask },
     driver: (driverContext) =>
       driveTaskExecutionV2({ options, rpcContext, driverContext }),
-    cancelTask: (signal) => cancelTask({ rpcContext, signal }),
+    cancelTask: (signal) => rpcContext.rpc.cancel(signal),
     lifecycleSignal: options.lifecycleSignal,
   });
 }
@@ -151,18 +152,16 @@ async function driveTaskExecutionV2<TResult, TApplicationContext>(args: {
     });
 
   while (!terminalStatus(knownStatus)) {
-    const delayMs = Math.max(
-      DEFAULT_TASK_POLL_INTERVAL_MS,
-      latestDetailedTask?.pollIntervalMs ??
-        options.initialTask.pollIntervalMs ??
-        DEFAULT_TASK_POLL_INTERVAL_MS,
+    const delayMs = taskPollInterval(
+      latestDetailedTask?.pollIntervalMs,
+      options.initialTask.pollIntervalMs,
     );
     const observed = await driverContext.nextObservation(
       lastNotificationSequence,
       delayMs,
       async (signal) => ({
         generation: "v2",
-        task: await fetchDetailedTask({ rpcContext, signal }),
+        task: await rpcContext.rpc.get(signal),
       }),
     );
     if (observed === undefined) continue;
@@ -185,10 +184,7 @@ async function driveTaskExecutionV2<TResult, TApplicationContext>(args: {
 
   if (driverContext.isClosed()) throw driverContext.errors.closed;
   if (latestDetailedTask === undefined)
-    latestDetailedTask = await fetchDetailedTask({
-      rpcContext,
-      signal: driverContext.signal,
-    });
+    latestDetailedTask = await rpcContext.rpc.get(driverContext.signal);
   return resolveTerminalTaskResult({
     task: latestDetailedTask,
     resultCodec: options.resultCodec,
@@ -196,28 +192,8 @@ async function driveTaskExecutionV2<TResult, TApplicationContext>(args: {
   });
 }
 
-async function fetchDetailedTask(args: {
-  readonly rpcContext: V2TaskRpcContext;
-  readonly signal: AbortSignal;
-}): Promise<DetailedTaskV2> {
-  const { rpcContext, signal } = args;
-  return parseResult(
-    GetTaskResultV2Schema,
-    responseResult(
-      await dispatchWithRetry(
-        rpcContext.port,
-        {
-          method: "tasks/get",
-          params: withTaskCapabilityV2({ taskId: rpcContext.handle.taskId }),
-        },
-        { signal, context: rpcContext.dispatchContext },
-        "observe",
-      ),
-    ),
-  );
-}
-
-function resolveTerminalTaskResult<TResult>(args: {
+/** Resolves a terminal V2 task with the same result and error semantics everywhere. */
+export function resolveTerminalTaskResult<TResult>(args: {
   readonly task: DetailedTaskV2;
   readonly resultCodec: RuntimeCodec<TResult>;
   readonly cancelledError: Error;
@@ -235,33 +211,15 @@ function resolveTerminalTaskResult<TResult>(args: {
   }
 }
 
-async function cancelTask(args: {
-  readonly rpcContext: V2TaskRpcContext;
-  readonly signal?: AbortSignal;
-}): Promise<void> {
-  const { rpcContext, signal } = args;
-  parseResult(
-    CancelTaskResultV2Schema,
-    responseResult(
-      await dispatchWithRetry(
-        rpcContext.port,
-        {
-          method: "tasks/cancel",
-          params: withTaskCapabilityV2({ taskId: rpcContext.handle.taskId }),
-        },
-        { signal, context: rpcContext.dispatchContext },
-        "mutate",
-      ),
-    ),
-  );
-}
-
 type InputResolution = {
   readonly inputKey: string;
   readonly response: InputResponseV2;
 };
 
-function projectInputRequest(request: InputRequestV2): ApplicationInputRequest {
+/** Projects a V2 wire input request to the generation-neutral application shape. */
+export function projectInputRequest(
+  request: InputRequestV2,
+): ApplicationInputRequest {
   if (request.method === "sampling/createMessage")
     return { kind: "sampling", params: request.params };
   if (request.method === "roots/list")
@@ -272,7 +230,8 @@ function projectInputRequest(request: InputRequestV2): ApplicationInputRequest {
   return { kind: "elicitation", params: request.params };
 }
 
-function responseSchemaForInputRequest(
+/** Selects the response validator for a V2 input request. */
+export function responseSchemaForInputRequest(
   request: InputRequestV2,
 ): z.ZodType<InputResponseV2> {
   if (request.method === "sampling/createMessage")
@@ -299,9 +258,10 @@ async function invokeInputHandler<TApplicationContext>(args: {
     return {
       kind: "result",
       value: await inputContext.onInputRequest(projectInputRequest(request), {
-        lifetime: "task-v2",
+        scope: "task",
+        delivery: "task-update",
         taskId: inputContext.handle.taskId,
-        inputKey,
+        inputId: inputKey,
         applicationContext: inputContext.applicationContext,
         signal: inputContext.inputSignal,
       }),
@@ -385,26 +345,7 @@ async function resolveAndSubmitInputRequests<TApplicationContext>(args: {
   )
     return;
   try {
-    parseResult(
-      UpdateTaskResultV2Schema,
-      responseResult(
-        await dispatchWithRetry(
-          inputContext.port,
-          {
-            method: "tasks/update",
-            params: withTaskCapabilityV2({
-              taskId: inputContext.handle.taskId,
-              inputResponses,
-            }),
-          },
-          {
-            signal: inputContext.signal,
-            context: inputContext.dispatchContext,
-          },
-          "mutate",
-        ),
-      ),
-    );
+    await inputContext.rpc.update(inputResponses, inputContext.signal);
     for (const inputKey of Object.keys(inputResponses))
       inputContext.acquiredRequestLedger.commit(inputKey);
   } catch (error) {

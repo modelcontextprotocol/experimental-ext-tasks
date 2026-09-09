@@ -17,9 +17,16 @@ const manifest = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
 const packageName = manifest.name;
-const publicSubpaths = ["core", "core/v1", "core/v2", "client"];
+const publicSubpaths = ["core", "core/v1", "core/v2", "client", "receiver"];
 const expectedRuntimeExports = {
-  core: ["JsonValueCodec", "ProtocolDecodeError", "isJsonValue", "taskId"],
+  core: [
+    "JsonValueCodec",
+    "ProtocolDecodeError",
+    "isJsonValue",
+    "runtimeCodecFromStandardSchema",
+    "taskId",
+    "toJsonValue",
+  ],
   "core/v1": [
     "CallToolAsTaskRequestV1Schema",
     "CallToolRequestV1Schema",
@@ -74,6 +81,7 @@ const expectedRuntimeExports = {
     "GetTaskResultV2Schema",
     "InputRequestV2Schema",
     "InputRequestsV2Schema",
+    "InputRequiredCallToolResultV2Schema",
     "InputRequiredTaskV2Schema",
     "InputResponseV2Schema",
     "InputResponsesV2Schema",
@@ -113,15 +121,32 @@ const expectedRuntimeExports = {
     "InputCorrelationError",
     "JsonRpcResponseError",
     "TaskCancellationUnsupportedError",
+    "TaskCancelledError",
     "TaskExecutionClosedError",
+    "TaskFailedError",
+    "TaskInputUpdateUnsupportedError",
     "TaskRecoveryOwnershipError",
+    "TaskRetentionUnsupportedError",
     "TaskUpdatesAlreadyAcquiredError",
+    "createApplicationInputHandler",
+    "createTaskSessionEndpointId",
     "createSessionPortFromClient",
-    "toolDeclarationV1",
-    "toolDeclarationV2",
+    "createTaskSessionFromClient",
+    "resultFromTaskOutcome",
+    "taskViewFromExecutionEvent",
+    "toolDeclaration",
+    "toolDeclarationFromMcpTool",
+    "withRelatedTaskMetadata",
     "withTasks",
   ],
+  receiver: ["bindTaskReceiver"],
 };
+const removedPrimaryClientNames = [
+  "TaskGenerationMismatchError",
+  "TaskSnapshot",
+  "toolDeclarationV1",
+  "toolDeclarationV2",
+];
 const removedCoreNames = [
   "DecodePath",
   "createRuntimeCodec",
@@ -275,6 +300,14 @@ async function checkBuiltContract() {
       [...expectedRuntimeExports[subpath]].sort(),
       `Runtime export snapshot changed for ${packageName}/${subpath}`,
     );
+    if (subpath === "client") {
+      for (const name of removedPrimaryClientNames)
+        assert.equal(
+          name in namespace,
+          false,
+          `Removed primary client export ${name} is still available`,
+        );
+    }
     if (subpath === "core/v2") {
       for (const alias of removedRuntimeAliasesV2)
         assert.equal(
@@ -311,6 +344,7 @@ async function checkPackedContract() {
     const packOutput = run(process.platform === "win32" ? "npm.cmd" : "npm", [
       "pack",
       "--ignore-scripts",
+      "--dry-run=false",
       "--json",
       "--pack-destination",
       packDirectory,
@@ -351,6 +385,7 @@ async function checkPackedContract() {
         "install",
         "--offline",
         "--ignore-scripts",
+        "--dry-run=false",
         "--no-audit",
         "--no-fund",
         "--no-package-lock",
@@ -374,9 +409,9 @@ async function checkPackedContract() {
       .join("\n");
     const positiveSource = `${positiveImports}
 import { withTasks } from "${packageName}/client";
-import type { ConnectedMcpSessionPort } from "${packageName}/client";
+import type { ConnectedMcpSessionPort, TaskEnabledSession, TaskOutcome, V2RequestFraming } from "${packageName}/client";
 import { ProtocolDecodeError } from "${packageName}/core";
-import type { RuntimeCodec } from "${packageName}/core";
+import type { RuntimeCodec, SynchronousStandardSchema } from "${packageName}/core";
 declare const port: ConnectedMcpSessionPort;
 const resultCodec: RuntimeCodec<number> = {
   parse(value) {
@@ -385,10 +420,20 @@ const resultCodec: RuntimeCodec<number> = {
     return { success: false, error: new ProtocolDecodeError("Expected value") };
   },
 };
+const framing: V2RequestFraming = { protocolVersion: "v2", clientInfo: { name: "x" }, clientCapabilities: {} };
+void framing;
+const standardSchema: SynchronousStandardSchema<number> = {
+  "~standard": { version: 1, vendor: "consumer", validate: () => ({ issues: [{ message: "bad", path: ["value"] }] }) },
+};
+void standardSchema;
+const decodeError = new ProtocolDecodeError("bad", { issues: [{ message: "bad", path: ["value"] }] });
+void decodeError.details.issues;
 const session = withTasks(port);
 const execution = await session.callTool("example", undefined, { resultCodec });
-const inferred: number = await execution.result();
+const inferred: TaskOutcome<number> = await execution.result();
 void inferred;
+const taskSession: TaskEnabledSession = session;
+void taskSession;
 `;
     await writeFile(join(consumerDirectory, "positive.ts"), positiveSource);
     const baseCompilerOptions = {
@@ -435,6 +480,10 @@ import type { ConnectedMcpSessionPort } from "${packageName}/client";
 declare const port: ConnectedMcpSessionPort;
 void withTasks(port).callTool("example", undefined, { resultCodec: {} });`,
       ],
+      ...removedPrimaryClientNames.map((name) => [
+        `removed-client-${name}`,
+        `import { ${name} } from "${packageName}/client";`,
+      ]),
       ...removedCoreNames.map((name) => [
         `removed-core-${name}`,
         `import { ${name} } from "${packageName}/core";`,

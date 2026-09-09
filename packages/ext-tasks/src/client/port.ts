@@ -3,8 +3,22 @@ import {
   type JsonValue,
   type RuntimeCodec,
 } from "../core/index.js";
-import type { ServerTaskCapabilitiesV1 } from "../core/v1/index.js";
-import type { ErrorV2, TasksExtensionCapabilityV2 } from "../core/v2/index.js";
+import {
+  CancelTaskResultV1Schema,
+  GetTaskResultV1Schema,
+  type ServerTaskCapabilitiesV1,
+  type TaskV1,
+} from "../core/v1/index.js";
+import {
+  CancelTaskResultV2Schema,
+  GetTaskResultV2Schema,
+  UpdateTaskResultV2Schema,
+  withTaskCapabilityV2,
+  type DetailedTaskV2,
+  type ErrorV2,
+  type InputResponseV2,
+  type TasksExtensionCapabilityV2,
+} from "../core/v2/index.js";
 import { JsonRpcResponseError } from "./api.js";
 import { throwIfAborted } from "./input-routing.js";
 
@@ -130,7 +144,6 @@ export async function dispatchWithRetry(
   port: ConnectedMcpSessionPort,
   request: JsonValue,
   dispatchOptions: DispatchOptions | AbortSignal | undefined,
-  retry: "observe" | "mutate",
 ): Promise<JsonRpcResponse> {
   const options =
     dispatchOptions instanceof AbortSignal
@@ -141,10 +154,7 @@ export async function dispatchWithRetry(
     return await port.dispatch(request, options);
   } catch (error) {
     throwIfAborted(signal);
-    if (
-      !(error instanceof DispatchError) ||
-      (retry === "mutate" && !error.retryable)
-    ) {
+    if (!(error instanceof DispatchError) || !error.retryable) {
       throw error;
     }
     return port.dispatch(request, options);
@@ -167,9 +177,11 @@ export function parseResult<T>(
   if ("safeParse" in codec) {
     const decoded = codec.safeParse(value);
     if (decoded.success) return decoded.data;
-    throw new ProtocolDecodeError("Protocol value failed schema validation", {
-      cause: decoded.error,
-    });
+    throw new ProtocolDecodeError(
+      "Protocol value failed schema validation",
+      {},
+      { cause: decoded.error },
+    );
   }
   const decoded = codec.parse(value);
   if (decoded.success) return decoded.value;
@@ -180,4 +192,117 @@ export function parseResult<T>(
 export function responseResult(response: JsonRpcResponse): JsonValue {
   if (response.kind === "error") throw new JsonRpcResponseError(response.error);
   return response.result;
+}
+
+interface TaskRpcOptions {
+  readonly port: ConnectedMcpSessionPort;
+  readonly taskId: string;
+  readonly context?: DispatchContext;
+}
+
+export interface TaskRpcV1 {
+  readonly generation: "v1";
+  readonly get: (signal?: AbortSignal) => Promise<TaskV1>;
+  readonly result: <TResult>(
+    codec: RuntimeCodec<TResult>,
+    signal?: AbortSignal,
+  ) => Promise<TResult>;
+  readonly cancel: (signal?: AbortSignal) => Promise<void>;
+}
+
+export interface TaskRpcV2 {
+  readonly generation: "v2";
+  readonly get: (signal?: AbortSignal) => Promise<DetailedTaskV2>;
+  readonly cancel: (signal?: AbortSignal) => Promise<void>;
+  readonly update: (
+    inputResponses: Readonly<Record<string, InputResponseV2>>,
+    signal?: AbortSignal,
+  ) => Promise<void>;
+}
+
+async function dispatchTaskRpc<T>(
+  options: TaskRpcOptions,
+  request: JsonValue,
+  schema: InternalSchema<T> | RuntimeCodec<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  const response = await dispatchWithRetry(options.port, request, {
+    signal,
+    context: options.context,
+  });
+  return parseResult(schema, responseResult(response));
+}
+
+/** Creates a task-bound RPC service that owns generation-specific wire details. */
+export function createTaskRpc(
+  generation: "v1",
+  options: TaskRpcOptions,
+): TaskRpcV1;
+export function createTaskRpc(
+  generation: "v2",
+  options: TaskRpcOptions,
+): TaskRpcV2;
+export function createTaskRpc(
+  generation: "v1" | "v2",
+  options: TaskRpcOptions,
+): TaskRpcV1 | TaskRpcV2 {
+  if (generation === "v1") {
+    return {
+      generation,
+      get: (signal) =>
+        dispatchTaskRpc(
+          options,
+          { method: "tasks/get", params: { taskId: options.taskId } },
+          GetTaskResultV1Schema,
+          signal,
+        ),
+      result: (codec, signal) =>
+        dispatchTaskRpc(
+          options,
+          { method: "tasks/result", params: { taskId: options.taskId } },
+          codec,
+          signal,
+        ),
+      cancel: async (signal) => {
+        await dispatchTaskRpc(
+          options,
+          { method: "tasks/cancel", params: { taskId: options.taskId } },
+          CancelTaskResultV1Schema,
+          signal,
+        );
+      },
+    };
+  }
+
+  const params = <T extends Readonly<Record<string, JsonValue>>>(value: T) =>
+    withTaskCapabilityV2(value);
+  return {
+    generation,
+    get: (signal) =>
+      dispatchTaskRpc(
+        options,
+        { method: "tasks/get", params: params({ taskId: options.taskId }) },
+        GetTaskResultV2Schema,
+        signal,
+      ),
+    cancel: async (signal) => {
+      await dispatchTaskRpc(
+        options,
+        { method: "tasks/cancel", params: params({ taskId: options.taskId }) },
+        CancelTaskResultV2Schema,
+        signal,
+      );
+    },
+    update: async (inputResponses, signal) => {
+      await dispatchTaskRpc(
+        options,
+        {
+          method: "tasks/update",
+          params: params({ taskId: options.taskId, inputResponses }),
+        },
+        UpdateTaskResultV2Schema,
+        signal,
+      );
+    },
+  };
 }

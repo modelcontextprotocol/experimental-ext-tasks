@@ -6,6 +6,7 @@ import {
   type ToolDeclaration,
   type ToolDeclarationProvider,
 } from "./api.js";
+import { projectTool } from "./internal.js";
 import type { ConnectedMcpSessionPort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
 
@@ -127,16 +128,15 @@ export class ManagedToolDeclarations implements ToolDeclarationProvider {
         if (generation === "v1") {
           const parsed = ToolV1Schema.safeParse(value);
           if (!parsed.success) throw parsed.error;
-          declaration = { generation: "v1", tool: parsed.data };
+          declaration = projectTool(parsed.data);
         } else {
           const parsed = ToolV2Schema.safeParse(value);
           if (!parsed.success) throw parsed.error;
-          declaration = { generation: "v2", tool: parsed.data };
+          declaration = projectTool(parsed.data);
         }
-        const toolName = declaration.tool.name;
-        if (decoded.has(toolName))
-          throw new Error(`Duplicate tool declaration: ${toolName}`);
-        decoded.set(toolName, declaration);
+        if (decoded.has(declaration.name))
+          throw new Error(`Duplicate tool declaration: ${declaration.name}`);
+        decoded.set(declaration.name, declaration);
       }
       cursor =
         typeof result.nextCursor === "string" ? result.nextCursor : undefined;

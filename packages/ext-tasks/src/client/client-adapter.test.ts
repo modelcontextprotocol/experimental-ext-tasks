@@ -7,7 +7,14 @@ import {
 import type { ClientContext } from "@modelcontextprotocol/client";
 import { describe, expect, it, vi } from "vitest";
 import type { JsonValue } from "../core/index.js";
-import { createSessionPortFromClient, withTasks } from "./index.js";
+import type { ApplicationInputHandler } from "./index.js";
+import {
+  createSessionPortFromClient,
+  createTaskSessionFromClient,
+  toolDeclarationFromMcpTool,
+  withTasks,
+} from "./index.js";
+import { ClientSessionPort } from "./sdk-client-adapter.js";
 
 const client = () => new Client({ name: "test", version: "1" });
 const context = {
@@ -20,6 +27,14 @@ const context = {
     notify: vi.fn(),
   },
 } satisfies ClientContext;
+const v2RequestFraming = {
+  protocolVersion: "2026-07-28",
+  clientInfo: { name: "test-client", version: "1.2.3" },
+  clientCapabilities: {
+    sampling: { tools: {} },
+    extensions: { "example/other": { enabled: true } },
+  },
+} as const;
 
 describe("Client adapter", () => {
   it("dispatches with an explicit schema and signal, preserving full protocol errors", async () => {
@@ -62,6 +77,90 @@ describe("Client adapter", () => {
     });
   });
 
+  it("allows manual input-required results only for tools/call", async () => {
+    const sdk = client();
+    const request = vi.spyOn(sdk, "request").mockResolvedValue({ ok: true });
+    const port = createSessionPortFromClient(sdk, "manual-input-options");
+    const controller = new AbortController();
+    const options = {
+      signal: controller.signal,
+      context: { headers: { "x-trace": "trace-1" } },
+    };
+
+    await port.dispatch(
+      { method: "tools/call", params: { name: "demo" } },
+      options,
+    );
+    await port.dispatch({ method: "custom/method" }, options);
+
+    expect(request.mock.calls[0]?.[2]).toEqual({
+      allowInputRequired: true,
+      signal: controller.signal,
+      headers: { "x-trace": "trace-1" },
+    });
+    expect(request.mock.calls[1]?.[2]).toEqual({
+      signal: controller.signal,
+      headers: { "x-trace": "trace-1" },
+    });
+    port[Symbol.dispose]();
+  });
+
+  it("routes manual input-required results to the session handler and preserves cancellation", async () => {
+    const sdk = client();
+    const request = vi.spyOn(sdk, "request").mockResolvedValue({
+      content: [],
+      resultType: "input_required",
+      requestState: "manual-state",
+      inputRequests: {
+        prompt: { method: "elicitation/create", params: { message: "Choose" } },
+      },
+    });
+    const controller = new AbortController();
+    const cancellation = new Error("caller cancelled");
+    let inputSignal: AbortSignal | undefined;
+    let markHandlerStarted: () => void = () => {};
+    const handlerStarted = new Promise<void>((resolve) => {
+      markHandlerStarted = resolve;
+    });
+    const onInputRequest: ApplicationInputHandler["handle"] = async (
+      input,
+      inputContext,
+    ) => {
+      expect(input).toMatchObject({
+        kind: "elicitation",
+        params: { message: "Choose" },
+      });
+      inputSignal = inputContext.signal;
+      markHandlerStarted();
+      return new Promise<never>((_resolve, reject) => {
+        inputContext.signal?.addEventListener(
+          "abort",
+          () => {
+            reject(cancellation);
+          },
+          { once: true },
+        );
+      });
+    };
+    const session = createTaskSessionFromClient(sdk, {
+      endpointId: "manual-input-session",
+      signal: controller.signal,
+      tools: { currentTool: () => undefined },
+      onInputRequest,
+    });
+    const pending = session.callTool("demo");
+
+    await handlerStarted;
+    expect(request.mock.calls[0]?.[2]).toMatchObject({
+      allowInputRequired: true,
+    });
+    expect(inputSignal).toBe(request.mock.calls[0]?.[2]?.signal);
+    controller.abort(cancellation);
+    await expect(pending).rejects.toBe(cancellation);
+    expect(inputSignal?.aborted).toBe(true);
+    await session.close();
+  });
+
   it("routes V2 task traffic through raw dispatch before SDK validation", async () => {
     const sdk = client();
     vi.spyOn(sdk, "getProtocolEra").mockReturnValue("modern");
@@ -73,19 +172,101 @@ describe("Client adapter", () => {
       kind: "result",
       result: { resultType: "task", taskId: "task-1" },
     });
-    const port = createSessionPortFromClient(sdk, "modern", { rawDispatch });
+    const port = createSessionPortFromClient(sdk, "modern", {
+      rawDispatch,
+      v2RequestFraming,
+    });
     const options = { context: { headers: { "x-trace": "trace-2" } } };
     await expect(
-      port.dispatch({ method: "tools/call", params: { name: "x" } }, options),
+      port.dispatch(
+        {
+          method: "tools/call",
+          params: {
+            name: "x",
+            _meta: {
+              trace: "keep-me",
+              "io.modelcontextprotocol/protocolVersion": "spoofed",
+              "io.modelcontextprotocol/clientInfo": { name: "spoofed" },
+              "io.modelcontextprotocol/clientCapabilities": { spoofed: true },
+            },
+          },
+        },
+        options,
+      ),
     ).resolves.toEqual({
       kind: "result",
       result: { resultType: "task", taskId: "task-1" },
     });
     expect(rawDispatch).toHaveBeenCalledWith(
-      { method: "tools/call", params: { name: "x" } },
+      {
+        method: "tools/call",
+        params: {
+          name: "x",
+          _meta: {
+            trace: "keep-me",
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              name: "test-client",
+              version: "1.2.3",
+            },
+            "io.modelcontextprotocol/clientCapabilities": {
+              sampling: { tools: {} },
+              extensions: {
+                "example/other": { enabled: true },
+                "io.modelcontextprotocol/tasks": {},
+              },
+            },
+          },
+        },
+      },
       options,
     );
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("copies V2 framing at creation and rejects malformed framing", async () => {
+    const sdk = client();
+    vi.spyOn(sdk, "getProtocolEra").mockReturnValue("modern");
+    vi.spyOn(sdk, "getServerCapabilities").mockReturnValue({
+      extensions: { "io.modelcontextprotocol/tasks": {} },
+    });
+    const mutable = {
+      protocolVersion: "2026-07-28",
+      clientInfo: { name: "before" },
+      clientCapabilities: { nested: { enabled: true } },
+    };
+    const rawDispatch = vi
+      .fn()
+      .mockResolvedValue({ kind: "result", result: {} });
+    const port = createSessionPortFromClient(sdk, "frozen", {
+      rawDispatch,
+      v2RequestFraming: mutable,
+    });
+    mutable.clientInfo.name = "after";
+    mutable.clientCapabilities.nested.enabled = false;
+    await port.dispatch({ method: "tasks/get", params: { taskId: "x" } });
+    expect(rawDispatch.mock.calls[0]?.[0]).toMatchObject({
+      params: {
+        _meta: {
+          "io.modelcontextprotocol/clientInfo": { name: "before" },
+          "io.modelcontextprotocol/clientCapabilities": {
+            nested: { enabled: true },
+          },
+        },
+      },
+    });
+    port[Symbol.dispose]();
+    const malformed = client();
+    vi.spyOn(malformed, "getProtocolEra").mockReturnValue("modern");
+    vi.spyOn(malformed, "getServerCapabilities").mockReturnValue({
+      extensions: { "io.modelcontextprotocol/tasks": {} },
+    });
+    expect(() =>
+      createSessionPortFromClient(malformed, "malformed", {
+        rawDispatch,
+        v2RequestFraming: { ...v2RequestFraming, protocolVersion: "" },
+      }),
+    ).toThrow(/protocolVersion must be non-empty/);
   });
 
   it("fails V2 port construction before send when no raw coordinator exists", () => {
@@ -96,7 +277,7 @@ describe("Client adapter", () => {
     });
     const request = vi.spyOn(sdk, "request");
     expect(() => createSessionPortFromClient(sdk, "modern")).toThrow(
-      "requires options.rawDispatch",
+      "requires options.rawDispatch and options.v2RequestFraming",
     );
     expect(request).not.toHaveBeenCalled();
   });
@@ -151,6 +332,7 @@ describe("Client adapter", () => {
         await Promise.resolve();
         return { kind: "result", result: {} };
       },
+      v2RequestFraming,
     });
     expect(modernPort.taskCapabilities).toEqual({
       generation: "v2",
@@ -305,7 +487,7 @@ describe("Client adapter", () => {
       tools: { currentTool: () => undefined },
     });
     const execution = await session.callTool("x");
-    await expect(execution.result()).resolves.toEqual({ content: [] });
+    await expect(legacyResult(execution)).resolves.toEqual({ content: [] });
     expect(foreign.request).toHaveBeenCalled();
     await session.close();
     port[Symbol.dispose]();
@@ -321,7 +503,7 @@ describe("Client adapter", () => {
       tools: { currentTool: () => undefined },
     });
     const execution = await session.callTool("x");
-    await expect(execution.result()).resolves.toEqual({ content: [] });
+    await expect(legacyResult(execution)).resolves.toEqual({ content: [] });
     expect(request).toHaveBeenCalledWith(
       { method: "tools/call", params: { name: "x" } },
       expect.any(Object),
@@ -370,4 +552,131 @@ describe("Client adapter", () => {
     const replacement = createSessionPortFromClient(sdk, "close-failure");
     replacement[Symbol.dispose]();
   });
+
+  it("creates an owned session and restores Client callbacks on close failure", async () => {
+    const sdk = client();
+    const prior = vi.fn(() => Promise.resolve({ prior: true }));
+    sdk.fallbackRequestHandler = prior;
+    const controller = new AbortController();
+    const sentinel = new Error("listener cleanup failed");
+    vi.spyOn(controller.signal, "removeEventListener").mockImplementation(
+      () => {
+        throw sentinel;
+      },
+    );
+    const errors: Error[] = [];
+    const session = createTaskSessionFromClient(sdk, {
+      endpointId: "opaque:endpoint/value",
+      signal: controller.signal,
+      tools: { currentTool: () => undefined },
+      onError: (error) => errors.push(error),
+    });
+    expect(session.endpointId).toBe("opaque:endpoint/value");
+    const closing = session.close();
+    await expect(closing).resolves.toBeUndefined();
+    expect(session.close()).toBe(closing);
+    expect(errors).toContain(sentinel);
+    expect(sdk.fallbackRequestHandler).toBe(prior);
+    const replacement = createSessionPortFromClient(sdk, "replacement");
+    replacement[Symbol.dispose]();
+  });
+
+  it("forwards rawDispatch through the owned Client session", async () => {
+    const sdk = client();
+    vi.spyOn(sdk, "getProtocolEra").mockReturnValue("modern");
+    vi.spyOn(sdk, "getServerCapabilities").mockReturnValue({
+      extensions: { "io.modelcontextprotocol/tasks": {} },
+    });
+    const request = vi.spyOn(sdk, "request");
+    const rawDispatch = vi.fn().mockResolvedValue({
+      kind: "result",
+      result: { resultType: "complete", content: [] },
+    });
+    const session = createTaskSessionFromClient(sdk, {
+      endpointId: "modern-owned",
+      rawDispatch,
+      v2RequestFraming,
+      tools: { currentTool: () => undefined },
+    });
+    const execution = await session.callTool("x");
+    await expect(legacyResult(execution)).resolves.toEqual({
+      resultType: "complete",
+      content: [],
+    });
+    expect(rawDispatch.mock.calls[0]?.[0]).toEqual({
+      method: "tools/call",
+      params: {
+        name: "x",
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientInfo": {
+            name: "test-client",
+            version: "1.2.3",
+          },
+          "io.modelcontextprotocol/clientCapabilities": {
+            sampling: { tools: {} },
+            extensions: {
+              "example/other": { enabled: true },
+              "io.modelcontextprotocol/tasks": {},
+            },
+          },
+        },
+      },
+    });
+    expect(request).not.toHaveBeenCalled();
+    await session.close();
+  });
+
+  it("converts SDK tools with object schemas and preserved extensions", () => {
+    const extendedTool = {
+      name: "search",
+      inputSchema: {
+        type: "object" as const,
+        properties: { query: { type: "string" } },
+      },
+      _meta: { source: "server" },
+      execution: {
+        taskSupport: "required" as const,
+        vendorExecution: { queue: "batch" },
+      },
+      vendorFlag: { enabled: true },
+    };
+    expect(toolDeclarationFromMcpTool(extendedTool)).toEqual({
+      name: "search",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+      },
+      metadata: { source: "server" },
+      taskSupport: "required",
+      executionExtensions: { vendorExecution: { queue: "batch" } },
+      extensions: { vendorFlag: { enabled: true } },
+    });
+    expect(() =>
+      toolDeclarationFromMcpTool({ name: "bad", inputSchema: true } as never),
+    ).toThrow(/inputSchema must be a JSON object/);
+  });
+
+  it("disposes the Client adapter when owned session construction fails", () => {
+    const sdk = client();
+    const prior = vi.fn(() => Promise.resolve({ prior: true }));
+    sdk.fallbackRequestHandler = prior;
+    const sentinel = new Error("session construction failed");
+    const registration = vi
+      .spyOn(ClientSessionPort.prototype, "onServerRequest")
+      .mockImplementationOnce(() => {
+        throw sentinel;
+      });
+    expect(() =>
+      createTaskSessionFromClient(sdk, {
+        endpointId: "construction-failure",
+        tools: { currentTool: () => undefined },
+      }),
+    ).toThrow(sentinel);
+    registration.mockRestore();
+    expect(sdk.fallbackRequestHandler).toBe(prior);
+    const replacement = createSessionPortFromClient(sdk, "replacement");
+    replacement[Symbol.dispose]();
+  });
 });
+import { legacyResult } from "../../test-support/client/semantic.js";

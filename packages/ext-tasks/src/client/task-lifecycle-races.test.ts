@@ -4,8 +4,9 @@ import {
   DispatchError,
   JsonRpcResponseError,
   TaskExecutionClosedError,
+  TaskFailedError,
   TaskUpdatesAlreadyAcquiredError,
-  toolDeclarationV2,
+  toolDeclaration,
   withTasks,
 } from "./index.js";
 import { deterministicJson } from "./execution.js";
@@ -58,7 +59,7 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -82,7 +83,7 @@ describe("task lifecycle and races", () => {
       },
     });
     await execution.close();
-    await expect(execution.result()).rejects.toBeInstanceOf(
+    await expect(legacyResult(execution)).rejects.toBeInstanceOf(
       TaskExecutionClosedError,
     );
     await session.close();
@@ -121,12 +122,12 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
     const result = execution.result();
-    const updates = execution.updates()[Symbol.asyncIterator]();
+    const updates = legacyUpdates(execution)[Symbol.asyncIterator]();
     await expect(updates.next()).resolves.toMatchObject({
       value: { task: { status: "working" } },
     });
@@ -140,7 +141,12 @@ describe("task lifecycle and races", () => {
       await execution.close();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(unhandled).toEqual([]);
-      await expect(result).rejects.toBeInstanceOf(TaskExecutionClosedError);
+      const outcome = await result;
+      expect(outcome.status).toBe("failed");
+      if (outcome.status !== "failed")
+        throw new Error("Expected failed outcome");
+      expect(outcome.error).toBeInstanceOf(TaskFailedError);
+      expect(outcome.error.cause).toBeInstanceOf(TaskExecutionClosedError);
     } finally {
       process.off("unhandledRejection", onUnhandledRejection);
     }
@@ -183,18 +189,18 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
     await session.close();
     expect(cancelCalls).toBe(1);
-    await expect(execution.result()).rejects.toBeInstanceOf(
+    await expect(legacyResult(execution)).rejects.toBeInstanceOf(
       TaskExecutionClosedError,
     );
   });
 
-  it("retries task observations once after any DispatchError", async () => {
+  it("retries task observations only for retryable DispatchError", async () => {
     await fc.assert(
       fc.asyncProperty(fc.boolean(), async (retryable) => {
         const port = new FakePort({ generation: "v2", capabilities: {} });
@@ -236,15 +242,20 @@ describe("task lifecycle and races", () => {
         const session = withTasks(port, {
           tools: {
             currentTool: () =>
-              toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+              toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
           },
         });
         const execution = await session.callTool("x");
-        await expect(execution.result()).resolves.toEqual({
-          resultType: "complete",
-          content: [],
-        });
-        expect(getCalls).toBe(2);
+        if (retryable)
+          await expect(legacyResult(execution)).resolves.toEqual({
+            resultType: "complete",
+            content: [],
+          });
+        else
+          await expect(legacyResult(execution)).rejects.toBeInstanceOf(
+            DispatchError,
+          );
+        expect(getCalls).toBe(retryable ? 2 : 1);
         await session.close();
       }),
       { numRuns: 10 },
@@ -291,7 +302,7 @@ describe("task lifecycle and races", () => {
         const session = withTasks(port, {
           tools: {
             currentTool: () =>
-              toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+              toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
           },
         });
         const execution = await session.callTool("x");
@@ -300,7 +311,7 @@ describe("task lifecycle and races", () => {
         else await expect(execution.cancel()).rejects.toThrow("cancel failed");
         expect(cancelCalls).toBe(retryable ? 2 : 1);
         await execution.close();
-        await expect(execution.result()).rejects.toBeInstanceOf(
+        await expect(legacyResult(execution)).rejects.toBeInstanceOf(
           TaskExecutionClosedError,
         );
         await session.close();
@@ -334,11 +345,11 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
-    const iterator = execution.updates()[Symbol.asyncIterator]();
+    const iterator = legacyUpdates(execution)[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
       value: { task: { statusMessage: "initial" } },
     });
@@ -430,11 +441,11 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
-    const iterator = execution.updates()[Symbol.asyncIterator]();
+    const iterator = legacyUpdates(execution)[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
       value: { task: { status: "working" } },
     });
@@ -480,7 +491,7 @@ describe("task lifecycle and races", () => {
       done: true,
       value: undefined,
     });
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       resultType: "complete",
       content: [{ type: "text", text: "first" }],
     });
@@ -514,11 +525,11 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
-    await expect(execution.result()).rejects.toBeInstanceOf(
+    await expect(legacyResult(execution)).rejects.toBeInstanceOf(
       JsonRpcResponseError,
     );
     expect(getCalls).toBe(1);
@@ -557,7 +568,7 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -565,7 +576,7 @@ describe("task lifecycle and races", () => {
     const iterator = execution.updates(observer.signal)[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
       value: {
-        generation: "v2",
+        type: "task",
         task: { taskId: "notify", status: "working" },
       },
     });
@@ -604,7 +615,7 @@ describe("task lifecycle and races", () => {
         },
       }),
     );
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       resultType: "complete",
       content: [],
     });
@@ -645,12 +656,12 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
     await expect(execution.close()).resolves.toBeUndefined();
-    await expect(execution.result()).rejects.toBeInstanceOf(
+    await expect(legacyResult(execution)).rejects.toBeInstanceOf(
       TaskExecutionClosedError,
     );
     await expect(session.close()).resolves.toBeUndefined();
@@ -689,12 +700,12 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
     port.invalidate(new Error("session replaced"));
-    await expect(execution.result()).rejects.toThrow("session replaced");
+    await expect(legacyResult(execution)).rejects.toThrow("session replaced");
     await session.close();
   });
 
@@ -745,7 +756,7 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -765,7 +776,7 @@ describe("task lifecycle and races", () => {
         },
       }),
     );
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       resultType: "complete",
       content: [],
     });
@@ -829,11 +840,11 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       resultType: "complete",
       content: [],
     });
@@ -881,7 +892,7 @@ describe("task lifecycle and races", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
     });
     const execution = await session.callTool("x");
@@ -896,4 +907,231 @@ describe("task lifecycle and races", () => {
     await execution.close();
     await session.close();
   });
+
+  it("settles task result and async snapshot observation concurrently", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    let getCalls = 0;
+    let cancelCalls = 0;
+    port.dispatchHandler = async (request) => {
+      await Promise.resolve();
+      const method = expectRecord(request).method;
+      if (method === "tools/call")
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "task",
+            taskId: "settle",
+            status: "working",
+            createdAt: "a",
+            lastUpdatedAt: "a",
+            ttlMs: null,
+          }),
+        };
+      if (method === "tasks/get") {
+        getCalls += 1;
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "complete",
+            taskId: "settle",
+            status: "completed",
+            createdAt: "a",
+            lastUpdatedAt: "b",
+            ttlMs: null,
+            result: { content: [] },
+          }),
+        };
+      }
+      if (method === "tasks/cancel") {
+        cancelCalls += 1;
+        return { kind: "result", result: { resultType: "complete" } };
+      }
+      throw new Error(`unexpected method ${formatJson(method)}`);
+    };
+    const declaration = toolDeclaration({
+      name: "x",
+      inputSchema: { type: "object" },
+    });
+    const session = withTasks(port, {
+      tools: { currentTool: () => declaration },
+    });
+    const observed: string[] = [];
+    const execution = await session.callTool("x");
+    const settlementPromise = execution.settle({
+      onEvent: async (event) => {
+        await Promise.resolve();
+        if (event.type === "task") observed.push(event.task.status);
+      },
+    });
+    expect(execution.settle()).toBe(settlementPromise);
+    const settlement = await settlementPromise;
+    expect(settlement.outcome).toMatchObject({
+      status: "completed",
+      result: { resultType: "complete", content: [] },
+    });
+    expect(settlement.lastTask?.status).toBe("completed");
+    expect(observed).toEqual(["working", "completed"]);
+    expect(getCalls).toBe(1);
+    expect(cancelCalls).toBe(0);
+    expect(execution.declaration).toBe(declaration);
+    const publicEvents: string[] = [];
+    for await (const event of execution.updates()) {
+      publicEvents.push(
+        event.type === "task" ? event.task.status : event.outcome.status,
+      );
+    }
+    expect(publicEvents).toEqual(["working", "completed", "completed"]);
+    await session.close();
+  });
+
+  it("preserves an observation failure when it precedes result failure", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    port.dispatchHandler = async (request) => {
+      await Promise.resolve();
+      const method = expectRecord(request).method;
+      if (method === "tools/call")
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "task",
+            taskId: "dual-error",
+            status: "working",
+            createdAt: "a",
+            lastUpdatedAt: "a",
+            ttlMs: null,
+          }),
+        };
+      if (method === "tasks/get")
+        return {
+          kind: "error",
+          error: { code: -32000, message: "result failed" },
+        };
+      throw new Error(`unexpected method ${formatJson(method)}`);
+    };
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () =>
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
+      },
+    });
+    const execution = await session.callTool("x");
+    const observationError = new Error("observation failed");
+    let caught: unknown;
+    try {
+      await execution.settle({
+        close: false,
+        onEvent: () => {
+          throw observationError;
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(observationError);
+    await session.close();
+  });
+
+  it("stops a nonterminating result driver when snapshot observation fails", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    let cancelCalls = 0;
+    port.dispatchHandler = async (request, options) => {
+      const method = expectRecord(request).method;
+      if (method === "tools/call")
+        return {
+          kind: "result",
+          result: asJson({
+            resultType: "task",
+            taskId: "observer-failure-hang",
+            status: "working",
+            createdAt: "a",
+            lastUpdatedAt: "a",
+            ttlMs: null,
+          }),
+        };
+      if (method === "tasks/get")
+        return new Promise((_resolve, reject) =>
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(asError(options.signal?.reason));
+            },
+            { once: true },
+          ),
+        );
+      if (method === "tasks/cancel") {
+        cancelCalls += 1;
+        return { kind: "result", result: { resultType: "complete" } };
+      }
+      throw new Error(`unexpected method ${formatJson(method)}`);
+    };
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () =>
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
+      },
+    });
+    const execution = await session.callTool("x");
+    const observationError = new Error("observer stopped");
+    await expect(
+      execution.settle({
+        onEvent: () => {
+          throw observationError;
+        },
+      }),
+    ).rejects.toBe(observationError);
+    expect(cancelCalls).toBe(0);
+    await session.close();
+  });
+  it("caller-aborted settle does not implicitly cancel the remote task", async () => {
+    const port = new FakePort({ generation: "v2", capabilities: {} });
+    let cancelCalls = 0;
+    const createdTask = {
+      resultType: "task",
+      taskId: "abort-settle",
+      status: "working",
+      createdAt: "a",
+      lastUpdatedAt: "a",
+      ttlMs: null,
+    } as const;
+    port.dispatchHandler = async (request, options) => {
+      const method = expectRecord(request).method;
+      if (method === "tools/call")
+        return { kind: "result", result: asJson(createdTask) };
+      if (method === "tasks/get")
+        return new Promise((_resolve, reject) =>
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(asError(options.signal?.reason));
+            },
+            { once: true },
+          ),
+        );
+      if (method === "tasks/cancel") {
+        cancelCalls += 1;
+        return { kind: "result", result: { resultType: "complete" } };
+      }
+      throw new Error(`unexpected method ${formatJson(method)}`);
+    };
+    const session = withTasks(port, {
+      tools: {
+        currentTool: () =>
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
+      },
+    });
+    const execution = await session.callTool("x");
+    const caller = new AbortController();
+    const settlement = execution.settle({ signal: caller.signal });
+    await Promise.resolve();
+    caller.abort(new Error("stop waiting"));
+    await expect(settlement).rejects.toThrow("stop waiting");
+    expect(cancelCalls).toBe(0);
+    expect(execution.kind).toBe("task");
+    if (execution.kind !== "task") throw new Error("Expected task execution");
+    await session.close();
+  });
 });
+import {
+  legacyResult,
+  legacyUpdates,
+} from "../../test-support/client/semantic.js";

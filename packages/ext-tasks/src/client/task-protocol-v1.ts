@@ -1,26 +1,23 @@
 /** Generation-specific requester-side V1 task execution. */
 
 import type { RuntimeCodec } from "../core/index.js";
-import {
-  CancelTaskResultV1Schema,
-  GetTaskResultV1Schema,
-  TaskResultV1Schema,
-} from "../core/v1/index.js";
 import type { TaskV1 } from "../core/v1/index.js";
 import { TaskCancellationUnsupportedError } from "./api.js";
-import type { TaskHandle } from "./api.js";
+import type { TaskSessionEndpointId, ToolDeclaration } from "./api.js";
+import type { InternalTaskHandle } from "./internal.js";
 import {
   DEFAULT_TASK_POLL_INTERVAL_MS,
   TaskExecution,
   terminalStatus,
 } from "./execution.js";
-import { parseResult, dispatchWithRetry, responseResult } from "./port.js";
+import { createTaskRpc } from "./port.js";
 import type { ConnectedMcpSessionPort, DispatchContext } from "./port.js";
 
 /** Creates an execution controller for an existing V1 task. */
 export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
   readonly applicationContext: TApplicationContext;
-  readonly handle: TaskHandle & { readonly generation: "v1" };
+  readonly handle: InternalTaskHandle & { readonly generation: "v1" };
+  readonly declaration?: ToolDeclaration;
   readonly initialTask: TaskV1;
   readonly resultCodec: RuntimeCodec<TResult>;
   readonly port: ConnectedMcpSessionPort;
@@ -35,10 +32,16 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
     resultCodec,
     port,
   } = options;
+  const rpc = createTaskRpc("v1", {
+    port,
+    taskId: handle.taskId,
+    context: dispatchContext,
+  });
   return new TaskExecution({
     applicationContext,
+    declaration: options.declaration,
     handle,
-    endpointId: port.endpointId,
+    endpointId: port.endpointId as TaskSessionEndpointId,
     initialSnapshot: { generation: "v1", task: initialTask },
     driver: async (context) => {
       let current = initialTask;
@@ -50,19 +53,10 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
             DEFAULT_TASK_POLL_INTERVAL_MS,
             current.pollInterval ?? DEFAULT_TASK_POLL_INTERVAL_MS,
           ),
-          (observationSignal) =>
-            dispatchWithRetry(
-              port,
-              { method: "tasks/get", params: { taskId: handle.taskId } },
-              { signal: observationSignal, context: dispatchContext },
-              "observe",
-            ).then((response) => ({
-              generation: "v1" as const,
-              task: parseResult(
-                GetTaskResultV1Schema,
-                responseResult(response),
-              ),
-            })),
+          async (observationSignal) => ({
+            generation: "v1" as const,
+            task: await rpc.get(observationSignal),
+          }),
         );
         if (observed === undefined) continue;
         if (observed.snapshot.generation !== "v1")
@@ -80,16 +74,7 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
       if (current.status === "cancelled") throw context.errors.cancelled;
       if (current.status === "failed")
         throw new Error(current.statusMessage ?? "Task failed");
-      const taskResult = responseResult(
-        await dispatchWithRetry(
-          port,
-          { method: "tasks/result", params: { taskId: handle.taskId } },
-          { signal: context.signal, context: dispatchContext },
-          "observe",
-        ),
-      );
-      parseResult(TaskResultV1Schema, taskResult);
-      return parseResult(resultCodec, taskResult);
+      return rpc.result(resultCodec, context.signal);
     },
     cancelTask: async (signal) => {
       const capabilities = port.taskCapabilities;
@@ -98,20 +83,7 @@ export function createTaskExecutionV1<TResult, TApplicationContext>(options: {
         capabilities.capabilities.cancel === undefined
       )
         throw new TaskCancellationUnsupportedError();
-      parseResult(
-        CancelTaskResultV1Schema,
-        responseResult(
-          await dispatchWithRetry(
-            port,
-            {
-              method: "tasks/cancel",
-              params: { taskId: handle.taskId },
-            },
-            { signal, context: dispatchContext },
-            "mutate",
-          ),
-        ),
-      );
+      await rpc.cancel(signal);
     },
     lifecycleSignal: options.lifecycleSignal,
   });

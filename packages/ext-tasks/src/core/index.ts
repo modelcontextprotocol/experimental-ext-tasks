@@ -12,10 +12,45 @@ export type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
+/** Normalizes an arbitrary JavaScript value through JSON stringify/parse semantics. */
+export function toJsonValue(value: unknown): JsonValue {
+  let serialized: unknown;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    throw new TypeError("Value cannot be serialized as JSON", { cause: error });
+  }
+  if (typeof serialized !== "string")
+    throw new TypeError("Value cannot be serialized as a top-level JSON value");
+  const normalized: unknown = JSON.parse(serialized);
+  if (!isJsonValue(normalized))
+    throw new TypeError("JSON serialization produced an invalid JSON value");
+  return normalized;
+}
+
+export type StandardSchemaPathSegment =
+  PropertyKey | { readonly key: PropertyKey };
+
+export interface StandardSchemaIssue {
+  readonly message: string;
+  readonly path?: readonly StandardSchemaPathSegment[];
+}
+
+export interface ProtocolDecodeErrorDetails {
+  readonly issues?: readonly StandardSchemaIssue[];
+}
+
 export class ProtocolDecodeError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  readonly details: ProtocolDecodeErrorDetails;
+
+  constructor(
+    message: string,
+    details: ProtocolDecodeErrorDetails = {},
+    options?: ErrorOptions,
+  ) {
     super(message, options);
     this.name = "ProtocolDecodeError";
+    this.details = details;
   }
 }
 
@@ -25,6 +60,67 @@ export type RuntimeDecodeResult<T> =
 
 export interface RuntimeCodec<T> {
   parse(value: JsonValue): RuntimeDecodeResult<T>;
+}
+
+/** Canonical synchronous Standard Schema V1 surface accepted at the package boundary. */
+export interface SynchronousStandardSchema<T> {
+  readonly "~standard": {
+    readonly version: 1;
+    readonly vendor: string;
+    readonly validate: (
+      value: unknown,
+    ) =>
+      | { readonly value: T; readonly issues?: undefined }
+      | { readonly issues: readonly StandardSchemaIssue[] };
+  };
+}
+
+/** Adapts a synchronous Standard Schema validator to the package runtime codec. */
+export function runtimeCodecFromStandardSchema<T>(
+  schema: SynchronousStandardSchema<T>,
+): RuntimeCodec<T> {
+  return {
+    parse(value) {
+      try {
+        const result = schema["~standard"].validate(value);
+        if ("issues" in result && result.issues !== undefined) {
+          const issues = Object.freeze(
+            result.issues.map((issue) =>
+              Object.freeze({
+                message: issue.message,
+                ...(issue.path === undefined
+                  ? {}
+                  : { path: Object.freeze([...issue.path]) }),
+              }),
+            ),
+          );
+          const message = issues.map((issue) => issue.message).join("; ");
+          return {
+            success: false,
+            error: new ProtocolDecodeError(
+              message || "Standard Schema validation failed",
+              { issues },
+            ),
+          };
+        }
+        if (!("value" in result))
+          return {
+            success: false,
+            error: new ProtocolDecodeError("Standard Schema returned no value"),
+          };
+        return { success: true, value: result.value };
+      } catch (error) {
+        return {
+          success: false,
+          error: new ProtocolDecodeError(
+            "Standard Schema validation failed",
+            {},
+            { cause: error },
+          ),
+        };
+      }
+    },
+  };
 }
 
 export type TaskSnapshot =

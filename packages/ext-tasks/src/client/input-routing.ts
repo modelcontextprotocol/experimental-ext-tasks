@@ -1,6 +1,10 @@
 import type { JsonValue, TaskGeneration, TaskId } from "../core/index.js";
+import { withRelatedTaskMetadata } from "./api.js";
 import type {
+  ApplicationInputCallbacks,
+  ApplicationInputHandler,
   ApplicationInputRequest,
+  ApplicationInputResult,
   InputCorrelationFailureReason,
   ResolvedInputExchangeContext,
 } from "./api.js";
@@ -50,7 +54,6 @@ export type RelatedTaskEvidence =
   | { readonly kind: "task-id"; readonly taskId: string };
 
 export interface InputCandidateProjection {
-  readonly generation: TaskGeneration;
   readonly toolName: string;
   readonly executionId: string;
 }
@@ -65,6 +68,72 @@ export type InputCandidateResolution<TApplicationContext> =
       readonly reason: InputCorrelationFailureReason;
       readonly candidates: readonly InputCandidateProjection[];
     };
+
+function existingMetadata(
+  request: ApplicationInputRequest,
+): Readonly<Record<string, JsonValue>> | undefined {
+  const metadata = request.params?._meta;
+  if (
+    metadata === null ||
+    Array.isArray(metadata) ||
+    typeof metadata !== "object"
+  )
+    return undefined;
+  return metadata as Readonly<Record<string, JsonValue>>;
+}
+
+function withContextRelatedTask<TRequest extends ApplicationInputRequest>(
+  request: TRequest,
+  context: ResolvedInputExchangeContext<unknown>,
+): TRequest {
+  if (context.scope !== "task" || context.taskId === undefined) return request;
+  return {
+    ...request,
+    params: {
+      ...request.params,
+      _meta: withRelatedTaskMetadata(existingMetadata(request), {
+        taskId: context.taskId,
+      }),
+    },
+  };
+}
+
+function unreachableInputRequest(request: never): never {
+  throw new TypeError(
+    `Unsupported application input request: ${String(request)}`,
+  );
+}
+
+/** Creates an exhaustive application input handler from kind-specific callbacks. */
+export function createApplicationInputHandler<TApplicationContext = void>(
+  callbacks: ApplicationInputCallbacks<TApplicationContext>,
+): ApplicationInputHandler<TApplicationContext>["handle"] {
+  return async <TRequest extends ApplicationInputRequest>(
+    originalRequest: TRequest,
+    context: ResolvedInputExchangeContext<TApplicationContext>,
+  ): Promise<ApplicationInputResult<TRequest>> => {
+    const request = withContextRelatedTask(originalRequest, context);
+    switch (request.kind) {
+      case "elicitation":
+        return (await callbacks.elicitation(
+          request,
+          context,
+        )) as ApplicationInputResult<TRequest>;
+      case "sampling":
+        return (await callbacks.sampling(
+          request,
+          context,
+        )) as ApplicationInputResult<TRequest>;
+      case "roots":
+        return (await callbacks.roots(
+          request,
+          context,
+        )) as ApplicationInputResult<TRequest>;
+      default:
+        return unreachableInputRequest(request);
+    }
+  };
+}
 
 /** Projects a supported wire request into the application input request shape. */
 export function projectApplicationInputRequest(
@@ -153,7 +222,6 @@ export function resolveInputCandidate<TApplicationContext>(
       kind: "failed",
       reason,
       candidates: matches.map((candidate) => ({
-        generation: candidate.generation,
         toolName: candidate.toolName,
         executionId: candidate.executionId,
       })),
@@ -168,15 +236,17 @@ export function buildResolvedInputContext<TApplicationContext>(
 ): ResolvedInputExchangeContext<TApplicationContext> {
   if (candidate.lifetime === "task-v1") {
     return {
-      lifetime: "task-v1",
+      scope: "task",
+      delivery: "peer-request",
       taskId: candidate.taskId,
       applicationContext: candidate.applicationContext,
       ...(candidate.signal === undefined ? {} : { signal: candidate.signal }),
     };
   }
   return {
-    lifetime: "basic",
-    executionId: candidate.executionId,
+    scope: "request",
+    delivery: "peer-request",
+    inputId: candidate.executionId,
     applicationContext: candidate.applicationContext,
     ...(candidate.signal === undefined ? {} : { signal: candidate.signal }),
   };

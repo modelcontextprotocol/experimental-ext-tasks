@@ -1,24 +1,30 @@
+import { ProtocolDecodeError } from "../core/index.js";
+import type { RuntimeCodec } from "../core/index.js";
+import { CallToolResultV1Schema } from "../core/v1/index.js";
+import type { CallToolResultV1, TaskV1 } from "../core/v1/index.js";
+import { CallToolResultV2Schema } from "../core/v2/index.js";
+import type { CallToolResultV2 } from "../core/v2/index.js";
 import {
-  ProtocolDecodeError,
-  type RuntimeCodec,
-  type TaskSnapshot,
-} from "../core/index.js";
-import {
-  CallToolResultV1Schema,
-  type CallToolResultV1,
-  type TaskV1,
-} from "../core/v1/index.js";
-import {
-  CallToolResultV2Schema,
-  type CallToolResultV2,
-} from "../core/v2/index.js";
-import {
+  JsonRpcResponseError,
+  TaskCancelledError,
   TaskExecutionClosedError,
+  TaskFailedError,
   TaskUpdatesAlreadyAcquiredError,
-  type SerializedTaskReference,
-  type TaskHandle,
-  type ToolExecutionCommon,
 } from "./api.js";
+import type {
+  SerializedTaskReference,
+  TaskExecutionEvent,
+  TaskHandle,
+  TaskOutcome,
+  TaskSessionEndpointId,
+  TaskView,
+  ToolDeclaration,
+  ToolExecutionCommon,
+  ToolExecutionSettleOptions,
+  ToolExecutionSettlement,
+} from "./api.js";
+import { completedOutcome, projectTask, publicTaskHandle } from "./internal.js";
+import type { InternalTaskHandle, InternalTaskSnapshot } from "./internal.js";
 import type { SessionTaskCapabilities } from "./port.js";
 import { linkAbortSignals, withAbort } from "./port.js";
 import { throwIfAborted } from "./input-routing.js";
@@ -39,6 +45,7 @@ function codecFromSchema<T>(schema: {
             success: false,
             error: new ProtocolDecodeError(
               "Protocol value failed schema validation",
+              {},
               { cause: decoded.error },
             ),
           };
@@ -66,8 +73,39 @@ export function reasonAsError(reason: unknown): Error {
 
 export const DEFAULT_TASK_POLL_INTERVAL_MS = 10;
 
+/** Applies the minimum polling cadence to server-suggested task intervals. */
+export function taskPollInterval(
+  ...suggestedIntervals: readonly (number | undefined)[]
+): number {
+  return Math.max(
+    DEFAULT_TASK_POLL_INTERVAL_MS,
+    ...suggestedIntervals.filter(
+      (interval): interval is number => interval !== undefined,
+    ),
+  );
+}
+
+/** Waits for the next task poll while remaining abortable. */
+export async function waitForTaskPoll(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await withAbort(
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, Math.max(0, delayMs));
+      }),
+      signal,
+    );
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 type TaskTurn =
-  { readonly sequence: number; readonly snapshot: TaskSnapshot } | undefined;
+  | { readonly sequence: number; readonly snapshot: InternalTaskSnapshot }
+  | undefined;
 
 function wakeAll(waiters: Set<() => void>): void {
   for (const wake of waiters) wake();
@@ -75,18 +113,15 @@ function wakeAll(waiters: Set<() => void>): void {
 }
 
 export interface TaskDriverContext {
-  readonly accept: (snapshot: TaskSnapshot) => TaskSnapshot;
+  readonly accept: (snapshot: InternalTaskSnapshot) => InternalTaskSnapshot;
   readonly nextObservation: (
     afterSequence: number,
     delayMs: number | undefined,
-    observation: (signal: AbortSignal) => Promise<TaskSnapshot>,
+    observation: (signal: AbortSignal) => Promise<InternalTaskSnapshot>,
   ) => Promise<TaskTurn>;
   readonly signal: AbortSignal;
   readonly inputSignal: AbortSignal;
-  readonly errors: {
-    readonly cancelled: Error;
-    readonly closed: Error;
-  };
+  readonly errors: { readonly cancelled: Error; readonly closed: Error };
   readonly isClosed: () => boolean;
 }
 
@@ -96,9 +131,10 @@ export type TaskDriver<TResult> = (
 
 interface TaskExecutionOptions<TResult, TApplicationContext> {
   readonly applicationContext: TApplicationContext;
-  readonly handle: TaskHandle;
-  readonly endpointId: string;
-  readonly initialSnapshot: TaskSnapshot;
+  readonly handle: InternalTaskHandle;
+  readonly declaration?: ToolDeclaration;
+  readonly endpointId: TaskSessionEndpointId;
+  readonly initialSnapshot: InternalTaskSnapshot;
   readonly driver: TaskDriver<TResult>;
   readonly cancelTask: (signal?: AbortSignal) => Promise<void>;
   readonly lifecycleSignal?: AbortSignal;
@@ -110,36 +146,46 @@ export class TaskExecution<
 > implements ToolExecutionCommon<TResult, TApplicationContext> {
   readonly kind = "task" as const;
   readonly applicationContext: TApplicationContext;
+  readonly declaration: ToolDeclaration | undefined;
   readonly handle: TaskHandle;
-  private readonly endpointId: string;
+  private readonly internalHandle: InternalTaskHandle;
+  private readonly endpointId: TaskSessionEndpointId;
   private readonly cancelTask: (signal?: AbortSignal) => Promise<void>;
   private readonly controller = new AbortController();
   private readonly inputController = new AbortController();
   private readonly cancellationController = new AbortController();
   private readonly resultPromise: Promise<TResult>;
-  private readonly cancelledError = new Error("Task was cancelled");
+  private readonly outcomePromise: Promise<TaskOutcome<TResult>>;
+  private readonly cancelledError = new TaskCancelledError();
   private readonly closedError = new TaskExecutionClosedError();
   private readonly turnWaiters = new Set<() => void>();
   private readonly updateWaiters = new Set<() => void>();
-  private initialSnapshot: TaskSnapshot | undefined;
-  private pendingSnapshot: TaskSnapshot | undefined;
-  private terminalSnapshot: TaskSnapshot | undefined;
-  private authoritativeTerminalSnapshot: TaskSnapshot | undefined;
+  private readonly observationWaiters = new Set<() => void>();
+  private readonly observedSnapshots: InternalTaskSnapshot[] = [];
+  private initialSnapshot: InternalTaskSnapshot | undefined;
+  private pendingSnapshot: InternalTaskSnapshot | undefined;
+  private terminalSnapshot: InternalTaskSnapshot | undefined;
+  private authoritativeTerminalSnapshot: InternalTaskSnapshot | undefined;
   private lastAcceptedBytes: string;
   private notificationSequence = 0;
-  private latestNotifiedSnapshot: TaskSnapshot | undefined;
+  private latestNotifiedSnapshot: InternalTaskSnapshot | undefined;
   private updatesAcquired = false;
   private cancelPromise: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
+  private settlementPromise:
+    Promise<ToolExecutionSettlement<TResult>> | undefined;
   private settled = false;
   private closed = false;
 
   constructor(options: TaskExecutionOptions<TResult, TApplicationContext>) {
     this.applicationContext = options.applicationContext;
-    this.handle = options.handle;
+    this.declaration = options.declaration;
+    this.internalHandle = options.handle;
+    this.handle = publicTaskHandle(options.handle);
     this.endpointId = options.endpointId;
     this.cancelTask = options.cancelTask;
     this.initialSnapshot = options.initialSnapshot;
+    this.observedSnapshots.push(options.initialSnapshot);
     const initialBytes = deterministicJson(options.initialSnapshot);
     this.lastAcceptedBytes = initialBytes;
     if (terminalStatus(options.initialSnapshot.task.status)) {
@@ -166,6 +212,46 @@ export class TaskExecution<
       },
       isClosed: () => this.closed,
     });
+    this.outcomePromise = this.resultPromise.then(
+      (result) => ({
+        status: "completed" as const,
+        result,
+        ...(this.authoritativeTerminalSnapshot === undefined
+          ? {}
+          : { task: projectTask(this.authoritativeTerminalSnapshot) }),
+      }),
+      (error: unknown) =>
+        error === this.cancelledError
+          ? {
+              status: "cancelled" as const,
+              ...(this.authoritativeTerminalSnapshot === undefined
+                ? {}
+                : { task: projectTask(this.authoritativeTerminalSnapshot) }),
+            }
+          : {
+              status: "failed" as const,
+              error:
+                error instanceof TaskFailedError
+                  ? error
+                  : error instanceof JsonRpcResponseError
+                    ? new TaskFailedError(
+                        error.message,
+                        { code: error.code, data: error.data },
+                        { cause: error },
+                      )
+                    : new TaskFailedError(
+                        error instanceof Error ? error.message : String(error),
+                        {},
+                        error instanceof Error ? { cause: error } : undefined,
+                      ),
+              ...(this.authoritativeTerminalSnapshot === undefined
+                ? {}
+                : { task: projectTask(this.authoritativeTerminalSnapshot) }),
+            },
+    );
+    void this.outcomePromise.catch(() => {
+      // The public outcome is cached even when callers detach without awaiting it.
+    });
     void this.resultPromise.then(
       () => {
         this.settled = true;
@@ -177,37 +263,41 @@ export class TaskExecution<
   }
 
   serializeReference(): SerializedTaskReference {
-    return { endpointId: this.endpointId, ...this.handle };
+    return { endpointId: this.endpointId, ...this.internalHandle };
   }
 
-  onNotification(snapshot: TaskSnapshot): void {
-    if (this.closed || snapshot.generation !== this.handle.generation) return;
-    if (snapshot.task.taskId !== this.handle.taskId) return;
+  onNotification(snapshot: InternalTaskSnapshot): void {
+    if (this.closed || snapshot.generation !== this.internalHandle.generation)
+      return;
+    if (snapshot.task.taskId !== this.internalHandle.taskId) return;
     this.transitionSnapshot(snapshot, "notification");
   }
 
-  updates(signal?: AbortSignal): AsyncIterable<TaskSnapshot> {
+  updates(signal?: AbortSignal): AsyncIterable<TaskExecutionEvent<TResult>> {
     if (this.updatesAcquired) throw new TaskUpdatesAlreadyAcquiredError();
     this.updatesAcquired = true;
-    return this.iterateUpdates(signal);
+    return this.iterateEvents(signal);
   }
 
-  private async *iterateUpdates(
+  private async *iterateEvents(
     signal?: AbortSignal,
-  ): AsyncIterable<TaskSnapshot> {
+  ): AsyncIterable<TaskExecutionEvent<TResult>> {
     for (;;) {
       throwIfAborted(signal);
       const snapshot = this.takeQueuedUpdate();
       if (snapshot !== undefined) {
-        yield snapshot;
+        yield { type: "task", task: projectTask(snapshot) };
         continue;
       }
       const settled = await this.waitForUpdateOrResult(signal);
-      if (!settled) return;
+      if (!settled) {
+        yield { type: "outcome", outcome: await this.result() };
+        return;
+      }
     }
   }
 
-  private takeQueuedUpdate(): TaskSnapshot | undefined {
+  private takeQueuedUpdate(): InternalTaskSnapshot | undefined {
     if (this.initialSnapshot !== undefined) {
       const snapshot = this.initialSnapshot;
       this.initialSnapshot = undefined;
@@ -223,15 +313,15 @@ export class TaskExecution<
     return snapshot;
   }
 
-  private acceptSnapshot(snapshot: TaskSnapshot): TaskSnapshot {
+  private acceptSnapshot(snapshot: InternalTaskSnapshot): InternalTaskSnapshot {
     if (this.closed) return snapshot;
     return this.transitionSnapshot(snapshot, "accepted");
   }
 
   private transitionSnapshot(
-    snapshot: TaskSnapshot,
+    snapshot: InternalTaskSnapshot,
     source: "accepted" | "notification",
-  ): TaskSnapshot {
+  ): InternalTaskSnapshot {
     // The first terminal snapshot is authoritative across polling, notifications,
     // result driving, and the update stream. Nothing may advance after it.
     if (this.authoritativeTerminalSnapshot !== undefined)
@@ -258,8 +348,59 @@ export class TaskExecution<
       this.notificationSequence += 1;
       wakeAll(this.turnWaiters);
     }
+    if (queuedUpdate) {
+      this.observedSnapshots.push(snapshot);
+      wakeAll(this.observationWaiters);
+    }
     if (queuedUpdate) wakeAll(this.updateWaiters);
     return snapshot;
+  }
+
+  private async *observeEvents(
+    signal?: AbortSignal,
+  ): AsyncIterable<TaskExecutionEvent<TResult>> {
+    let index = 0;
+    for (;;) {
+      throwIfAborted(signal);
+      while (index < this.observedSnapshots.length) {
+        const snapshot = this.observedSnapshots[index];
+        index += 1;
+        yield { type: "task", task: projectTask(snapshot) };
+      }
+      const settled = await this.waitForObservationOrResult(index, signal);
+      if (!settled) {
+        yield { type: "outcome", outcome: await this.result() };
+        return;
+      }
+    }
+  }
+
+  private async waitForObservationOrResult(
+    index: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (index < this.observedSnapshots.length) return true;
+    let wake: (() => void) | undefined;
+    const observed = new Promise<true>((resolve) => {
+      wake = () => {
+        resolve(true);
+      };
+      this.observationWaiters.add(wake);
+    });
+    try {
+      return await withAbort(
+        Promise.race([
+          observed,
+          this.resultPromise.then(
+            () => false,
+            () => false,
+          ),
+        ]),
+        signal,
+      );
+    } finally {
+      if (wake !== undefined) this.observationWaiters.delete(wake);
+    }
   }
 
   private async waitForUpdateOrResult(signal?: AbortSignal): Promise<boolean> {
@@ -339,7 +480,7 @@ export class TaskExecution<
   private async nextObservation(
     afterSequence: number,
     delayMs: number | undefined,
-    observation: (signal: AbortSignal) => Promise<TaskSnapshot>,
+    observation: (signal: AbortSignal) => Promise<InternalTaskSnapshot>,
   ): Promise<TaskTurn> {
     const turn = await this.waitForTurn(afterSequence, delayMs);
     if (turn !== undefined) return turn;
@@ -380,8 +521,19 @@ export class TaskExecution<
     }
   }
 
-  result(): Promise<TResult> {
-    return this.resultPromise;
+  result(): Promise<TaskOutcome<TResult>> {
+    return this.outcomePromise;
+  }
+
+  settle(
+    options: ToolExecutionSettleOptions<TResult> = {},
+  ): Promise<ToolExecutionSettlement<TResult>> {
+    this.settlementPromise ??= settleExecution(
+      this,
+      this.observeEvents(options.signal),
+      options,
+    );
+    return this.settlementPromise;
   }
 
   inputSignal(): AbortSignal {
@@ -400,17 +552,22 @@ export class TaskExecution<
       : withAbort(this.cancelPromise, signal);
   }
 
-  close(): Promise<void> {
-    if (this.closePromise !== undefined) return this.closePromise;
-    const shouldCancel = !this.settled;
+  detach(): Promise<void> {
+    if (this.closed) return Promise.resolve();
     this.closed = true;
     this.controller.abort(this.closedError);
     this.inputController.abort(this.closedError);
+    return Promise.resolve();
+  }
+
+  close(): Promise<void> {
+    if (this.closePromise !== undefined) return this.closePromise;
+    const shouldCancel = !this.settled;
+    this.closePromise = this.detach();
     if (shouldCancel)
       void this.cancel().catch(() => {
         // Cooperative cancellation is best effort during close.
       });
-    this.closePromise = Promise.resolve();
     return this.closePromise;
   }
 
@@ -447,36 +604,101 @@ export function terminalStatus(status: TaskV1["status"]): boolean {
   );
 }
 
+async function settleExecution<TResult>(
+  execution: ToolExecutionCommon<TResult, unknown>,
+  events: AsyncIterable<TaskExecutionEvent<TResult>>,
+  options: ToolExecutionSettleOptions<TResult>,
+): Promise<ToolExecutionSettlement<TResult>> {
+  let lastTask: TaskView | undefined;
+  const observation = (async () => {
+    for await (const event of events) {
+      if (event.type === "task") lastTask = event.task;
+      await options.onEvent?.(event);
+    }
+  })();
+  const outcome = withAbort(execution.result(), options.signal);
+  const first = await Promise.race([
+    outcome.then(
+      (value) => ({ branch: "outcome" as const, value }),
+      (error: unknown) => ({ branch: "outcome-error" as const, error }),
+    ),
+    observation.then(
+      () => ({ branch: "observation" as const }),
+      (error: unknown) => ({ branch: "observation-error" as const, error }),
+    ),
+  ]);
+  if (first.branch === "observation-error") {
+    await execution.detach();
+    throw first.error;
+  }
+  if (first.branch === "outcome-error") {
+    await execution.detach();
+    await observation.catch(() => {});
+    throw first.error;
+  }
+  const outcomeValue = first.branch === "outcome" ? first.value : await outcome;
+  await observation;
+  if (options.close !== false) {
+    try {
+      await execution.close();
+    } catch {
+      // Settlement cleanup is best effort and never masks execution outcomes.
+    }
+  }
+  return { outcome: outcomeValue, lastTask };
+}
+
 export class ImmediateExecution<
   TResult,
   TApplicationContext,
 > implements ToolExecutionCommon<TResult, TApplicationContext> {
   readonly kind = "immediate" as const;
   readonly handle = undefined;
+  readonly declaration: ToolDeclaration | undefined;
+  private readonly outcomePromise: Promise<TaskOutcome<TResult>>;
+  private settlementPromise:
+    Promise<ToolExecutionSettlement<TResult>> | undefined;
 
   constructor(
     readonly applicationContext: TApplicationContext,
     private readonly resultPromise: Promise<TResult>,
-  ) {}
+    declaration?: ToolDeclaration,
+  ) {
+    this.declaration = declaration;
+    this.outcomePromise = completedOutcome(this.resultPromise);
+  }
 
-  updates(signal?: AbortSignal): AsyncIterable<TaskSnapshot> {
+  updates(signal?: AbortSignal): AsyncIterable<TaskExecutionEvent<TResult>> {
     throwIfAborted(signal);
+    const outcome = this.result();
     return {
-      [Symbol.asyncIterator]() {
-        return {
-          next: () =>
-            Promise.resolve({ done: true as const, value: undefined }),
-        };
+      async *[Symbol.asyncIterator]() {
+        yield { type: "outcome" as const, outcome: await outcome };
       },
     };
   }
 
-  result(): Promise<TResult> {
-    return this.resultPromise;
+  result(): Promise<TaskOutcome<TResult>> {
+    return this.outcomePromise;
+  }
+
+  settle(
+    options: ToolExecutionSettleOptions<TResult> = {},
+  ): Promise<ToolExecutionSettlement<TResult>> {
+    this.settlementPromise ??= settleExecution(
+      this,
+      this.updates(options.signal),
+      options,
+    );
+    return this.settlementPromise;
   }
 
   cancel(signal?: AbortSignal): Promise<void> {
     throwIfAborted(signal);
+    return Promise.resolve();
+  }
+
+  detach(): Promise<void> {
     return Promise.resolve();
   }
 

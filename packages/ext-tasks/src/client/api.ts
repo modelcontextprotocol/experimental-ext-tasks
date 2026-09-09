@@ -1,20 +1,14 @@
-import type {
-  JsonValue,
-  RuntimeCodec,
-  TaskGeneration,
-  TaskId,
-  TaskSnapshot,
-} from "../core/index.js";
+import { toJsonValue } from "../core/index.js";
+import type { JsonValue, RuntimeCodec, TaskId } from "../core/index.js";
 import type {
   CallToolResultV1,
   TaskEligibleMethodV1,
-  ToolV1,
 } from "../core/v1/index.js";
 import type {
   CallToolResultV2,
   ErrorV2,
+  InputResponsesV2,
   TaskEligibleMethodV2,
-  ToolV2,
 } from "../core/v2/index.js";
 
 export class JsonRpcResponseError extends Error {
@@ -31,9 +25,40 @@ export class JsonRpcResponseError extends Error {
   }
 }
 
+/** Generation-neutral terminal task failure, preserving protocol details when present. */
+export class TaskFailedError extends Error {
+  readonly code?: number;
+  readonly data?: JsonValue;
+
+  constructor(
+    message: string,
+    details: { readonly code?: number; readonly data?: JsonValue } = {},
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "TaskFailedError";
+    if (details.code !== undefined) this.code = details.code;
+    if (details.data !== undefined) this.data = details.data;
+  }
+}
+
+/** Typed sentinel used when remote task execution terminates by cancellation. */
+export class TaskCancelledError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("Task was cancelled", options);
+    this.name = "TaskCancelledError";
+  }
+}
+
+export class TaskRetentionUnsupportedError extends Error {
+  constructor() {
+    super("Requested task retention is not supported by this session");
+    this.name = "TaskRetentionUnsupportedError";
+  }
+}
+
 export class TaskRecoveryOwnershipError extends Error {
   constructor(
-    readonly generation: TaskGeneration,
     readonly taskId: TaskId,
     readonly originalOperation: string,
     readonly activeOriginalOperation: string,
@@ -48,24 +73,72 @@ export class TaskRecoveryOwnershipError extends Error {
   }
 }
 
-export type ToolDeclaration =
-  | {
-      readonly generation: "v1";
-      readonly tool: ToolV1;
-    }
-  | {
-      readonly generation: "v2";
-      readonly tool: ToolV2;
-    };
-
-/** Tags a generated V1 tool declaration for a host-supplied provider. */
-export function toolDeclarationV1(tool: ToolV1): ToolDeclaration {
-  return { generation: "v1", tool };
+/** Structural tool declaration independent of a negotiated Tasks generation. */
+export interface ToolDeclaration {
+  readonly name: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly inputSchema: Readonly<Record<string, JsonValue>>;
+  readonly outputSchema?: Readonly<Record<string, JsonValue>>;
+  readonly annotations?: Readonly<Record<string, JsonValue>>;
+  readonly icons?: readonly Readonly<Record<string, JsonValue>>[];
+  readonly metadata?: Readonly<Record<string, JsonValue>>;
+  readonly taskSupport?: "forbidden" | "optional" | "required";
+  /** Unrecognized top-level declaration data retained for inspection and projection. */
+  readonly extensions?: Readonly<Record<string, JsonValue>>;
+  /** Unrecognized fields nested under the MCP tool execution declaration. */
+  readonly executionExtensions?: Readonly<Record<string, JsonValue>>;
 }
 
-/** Tags a generated V2 tool declaration for a host-supplied provider. */
-export function toolDeclarationV2(tool: ToolV2): ToolDeclaration {
-  return { generation: "v2", tool };
+/** Creates a generation-neutral structural tool declaration. */
+export function toolDeclaration(
+  declaration: ToolDeclaration & {
+    readonly execution?: {
+      readonly taskSupport?: ToolDeclaration["taskSupport"];
+      readonly extensions?: Readonly<Record<string, JsonValue>>;
+    };
+  },
+): ToolDeclaration {
+  const { execution, ...neutral } = declaration;
+  return {
+    ...neutral,
+    ...(neutral.taskSupport === undefined &&
+    execution?.taskSupport !== undefined
+      ? { taskSupport: execution.taskSupport }
+      : {}),
+    ...(neutral.executionExtensions === undefined &&
+    execution?.extensions !== undefined
+      ? { executionExtensions: execution.extensions }
+      : {}),
+  };
+}
+
+/** Returns request metadata with standard related-task evidence installed. */
+export function withRelatedTaskMetadata(
+  metadata: Readonly<Record<string, JsonValue>> | undefined,
+  task: Pick<TaskHandle, "taskId">,
+): Readonly<Record<string, JsonValue>> {
+  return {
+    ...metadata,
+    "io.modelcontextprotocol/related-task": { taskId: task.taskId },
+  };
+}
+
+function canonicalJson(value: JsonValue): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value).sort(([left], [right]) => {
+    const serializedLeft = JSON.stringify(left);
+    const serializedRight = JSON.stringify(right);
+    return serializedLeft < serializedRight
+      ? -1
+      : serializedLeft > serializedRight
+        ? 1
+        : 0;
+  });
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+    .join(",")}}`;
 }
 
 export interface ToolDeclarationProvider {
@@ -112,32 +185,35 @@ export type ApplicationInputResult<TRequest extends ApplicationInputRequest> =
         ? ApplicationListRootsResult
         : never;
 
-export type ResolvedInputExchangeContext<TApplicationContext = void> =
-  | {
-      readonly lifetime: "basic";
-      readonly executionId: string;
-      readonly applicationContext: TApplicationContext;
-      readonly signal?: AbortSignal;
-    }
-  | {
-      readonly lifetime: "task-v1";
-      readonly taskId: string;
-      readonly applicationContext: TApplicationContext;
-      readonly signal?: AbortSignal;
-    }
-  | {
-      readonly lifetime: "task-v2";
-      readonly taskId: string;
-      readonly inputKey: string;
-      readonly applicationContext: TApplicationContext;
-      readonly signal?: AbortSignal;
-    };
+export interface ResolvedInputExchangeContext<TApplicationContext = void> {
+  readonly scope: "request" | "task";
+  readonly delivery: "peer-request" | "request-retry" | "task-update";
+  readonly taskId?: TaskId;
+  readonly inputId?: string;
+  readonly applicationContext: TApplicationContext;
+  readonly signal?: AbortSignal;
+}
 
 export interface ApplicationInputHandler<TApplicationContext = void> {
   handle<TRequest extends ApplicationInputRequest>(
     request: TRequest,
     context: ResolvedInputExchangeContext<TApplicationContext>,
   ): Promise<ApplicationInputResult<TRequest>>;
+}
+
+export interface ApplicationInputCallbacks<TApplicationContext = void> {
+  readonly elicitation: (
+    request: Extract<ApplicationInputRequest, { readonly kind: "elicitation" }>,
+    context: ResolvedInputExchangeContext<TApplicationContext>,
+  ) => ApplicationElicitResult | Promise<ApplicationElicitResult>;
+  readonly sampling: (
+    request: Extract<ApplicationInputRequest, { readonly kind: "sampling" }>,
+    context: ResolvedInputExchangeContext<TApplicationContext>,
+  ) => ApplicationCreateMessageResult | Promise<ApplicationCreateMessageResult>;
+  readonly roots: (
+    request: Extract<ApplicationInputRequest, { readonly kind: "roots" }>,
+    context: ResolvedInputExchangeContext<TApplicationContext>,
+  ) => ApplicationListRootsResult | Promise<ApplicationListRootsResult>;
 }
 
 export type InputCorrelationFailureReason =
@@ -147,14 +223,12 @@ export type InputCorrelationFailureReason =
   | "ambiguous-matches";
 
 export interface InputCorrelationCandidate {
-  readonly generation: TaskGeneration;
   readonly toolName: string;
   readonly executionId: string;
 }
 
 export class InputCorrelationError extends Error {
   constructor(
-    readonly generation: TaskGeneration,
     readonly requestKind: ApplicationInputRequest["kind"],
     readonly candidates: readonly InputCorrelationCandidate[],
     readonly reason: InputCorrelationFailureReason,
@@ -171,25 +245,117 @@ export interface WithTasksOptions<TApplicationContext = void> {
   readonly signal?: AbortSignal;
 }
 
-export type { TaskEligibleMethodV2 } from "../core/v2/index.js";
+/** Opaque current-session identity for a managed task. */
+export interface TaskHandle {
+  readonly taskId: TaskId;
+  readonly operation: string;
+}
 
-export type TaskHandle =
+export type TaskState =
+  "working" | "input_required" | "completed" | "failed" | "cancelled";
+
+/** Generation-neutral task data suitable for application and UI use. */
+export interface TaskView {
+  readonly taskId: TaskId;
+  readonly status: TaskState;
+  readonly statusMessage?: string;
+  readonly createdAt?: string;
+  readonly lastUpdatedAt?: string;
+  readonly retentionMs: number | null;
+  readonly suggestedPollIntervalMs?: number;
+  /** Compatibility alias for retentionMs; prefer retentionMs in new code. */
+  readonly ttl: number | null;
+  /** Compatibility alias for suggestedPollIntervalMs; prefer that primary name in new code. */
+  readonly pollInterval?: number;
+  readonly raw: Readonly<Record<string, JsonValue>>;
+  readonly extensions: Readonly<Record<string, JsonValue>>;
+}
+
+/** One page of server-owned task inventory. */
+export interface TaskListPage {
+  readonly tasks: readonly TaskView[];
+  readonly nextCursor?: string;
+}
+
+export type TaskOutcome<TResult> =
   | {
-      readonly generation: "v1";
-      readonly taskId: TaskId;
-      readonly originalOperation: TaskEligibleMethodV1;
+      readonly status: "completed";
+      readonly result: TResult;
+      readonly task?: TaskView;
     }
   | {
-      readonly generation: "v2";
-      readonly taskId: TaskId;
-      readonly originalOperation: TaskEligibleMethodV2;
-    };
+      readonly status: "failed";
+      readonly error: TaskFailedError;
+      readonly task?: TaskView;
+    }
+  | { readonly status: "cancelled"; readonly task?: TaskView };
+
+export type TaskExecutionEvent<TResult> =
+  | { readonly type: "task"; readonly task: TaskView }
+  | { readonly type: "outcome"; readonly outcome: TaskOutcome<TResult> };
+
+/** Returns the task represented by an execution event, when one is available. */
+export function taskViewFromExecutionEvent<TResult>(
+  event: TaskExecutionEvent<TResult>,
+): TaskView | undefined {
+  return event.type === "task" ? event.task : event.outcome.task;
+}
+
+/** Unwraps a completed outcome or throws its typed failure/cancellation error. */
+export function resultFromTaskOutcome<TResult>(
+  outcome: TaskOutcome<TResult>,
+): TResult {
+  if (outcome.status === "completed") return outcome.result;
+  if (outcome.status === "failed") throw outcome.error;
+  throw new TaskCancelledError();
+}
+
+export interface ToolExecutionSettleOptions<TResult = unknown> {
+  /** Stops local waiting and observation without cancelling the remote task. */
+  readonly signal?: AbortSignal;
+  readonly onEvent?: (
+    event: TaskExecutionEvent<TResult>,
+  ) => void | Promise<void>;
+  /** Best-effort closes the execution after natural settlement. Defaults to true. */
+  readonly close?: boolean;
+}
+
+export interface ToolExecutionSettlement<TResult> {
+  readonly outcome: TaskOutcome<TResult>;
+  readonly lastTask: TaskView | undefined;
+}
+
+export interface CallToolAndSettleOptions<TResult, TApplicationContext = void>
+  extends
+    ToolCallOptions<TResult, TApplicationContext>,
+    ToolExecutionSettleOptions<TResult> {}
+
+/** Fully-owned tool-call lifecycle result. */
+export interface CallToolAndSettleResult<
+  TResult,
+> extends ToolExecutionSettlement<TResult> {
+  readonly handle: TaskHandle | undefined;
+}
 
 export interface ToolExecutionCommon<TResult, TApplicationContext = void> {
   readonly applicationContext: TApplicationContext;
-  updates(signal?: AbortSignal): AsyncIterable<TaskSnapshot>;
-  result(): Promise<TResult>;
+  readonly declaration: ToolDeclaration | undefined;
+  /**
+   * Acquires the one-owner update stream. A second acquisition throws.
+   * Settlement observes independently and does not acquire or drain this stream.
+   */
+  updates(signal?: AbortSignal): AsyncIterable<TaskExecutionEvent<TResult>>;
+  result(): Promise<TaskOutcome<TResult>>;
+  /**
+   * Returns one cached settlement. The first call owns observation/cleanup options;
+   * later calls return that same promise regardless of their supplied options.
+   */
+  settle(
+    options?: ToolExecutionSettleOptions<TResult>,
+  ): Promise<ToolExecutionSettlement<TResult>>;
   cancel(signal?: AbortSignal): Promise<void>;
+  /** Stops local driving and releases ownership without cancelling the remote task. */
+  detach(): Promise<void>;
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
 }
@@ -226,33 +392,120 @@ export class TaskCancellationUnsupportedError extends Error {
   }
 }
 
+export type TaskPreference = "allow" | "prefer" | "require" | "forbid";
+export type TaskRetentionPolicy = "best-effort" | "require-capability";
+
+export interface TaskOptions {
+  readonly preference?: TaskPreference;
+  readonly retentionMs?: number;
+  /** Defaults to best-effort; strict mode rejects before dispatch if unsupported. */
+  readonly retention?: TaskRetentionPolicy;
+}
+
 /** Options for one tool call, including host-owned wire context. */
 export interface ToolCallOptions<TResult, TApplicationContext = void> {
   readonly resultCodec?: RuntimeCodec<TResult>;
+  /** Execution-scoped declaration. Takes precedence over the session provider. */
+  readonly declaration?: ToolDeclaration;
   readonly applicationContext?: TApplicationContext;
   readonly signal?: AbortSignal;
-  readonly preferTask?: boolean;
+  readonly task?: TaskOptions;
   /** Arbitrary request metadata preserved alongside package-owned keys. */
   readonly metadata?: Readonly<Record<string, JsonValue>>;
   /** Additional headers for the initiating call and task follow-up requests. */
   readonly headers?: Readonly<Record<string, string>>;
-  /** Requested V1 task lifetime in milliseconds. Ignored when no V1 task is requested. */
-  readonly taskTtl?: number;
+}
+
+export interface TaskControllerOptions {
+  /** Additional headers preserved on every task request. */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+export interface TaskResultOptions<TResult> {
+  readonly resultCodec?: RuntimeCodec<TResult>;
+  readonly signal?: AbortSignal;
+}
+
+export interface TaskController {
+  readonly taskId: TaskId;
+  readonly capabilities: TaskCapabilities;
+  snapshot(signal?: AbortSignal): Promise<TaskView>;
+  result<TResult = CallToolResultV1 | CallToolResultV2>(
+    options?: TaskResultOptions<TResult>,
+  ): Promise<TaskOutcome<TResult>>;
+  cancel(signal?: AbortSignal): Promise<void>;
+  update(inputResponses: InputResponsesV2, signal?: AbortSignal): Promise<void>;
+  updateJson(inputResponses: unknown, signal?: AbortSignal): Promise<void>;
+}
+
+export interface TaskCapabilities {
+  readonly inventory: "server-list" | "known-handles" | "unsupported";
+  readonly execution: boolean;
+  readonly cancellation: boolean;
+  readonly inputResponses: boolean;
+  readonly requestedRetention: boolean;
+}
+
+export class TaskInputUpdateUnsupportedError extends Error {
+  constructor() {
+    super("Task input response updates require a V2 task session");
+    this.name = "TaskInputUpdateUnsupportedError";
+  }
+}
+
+export type TaskSessionEndpointId = string & {
+  readonly __taskSessionEndpointId: unique symbol;
+};
+
+/**
+ * Creates a stable endpoint identity from host-owned connection semantics.
+ * Object keys in the descriptor are sorted recursively before a versioned SHA-256 digest.
+ */
+export async function createTaskSessionEndpointId(
+  namespace: string,
+  descriptor: unknown,
+): Promise<TaskSessionEndpointId> {
+  if (namespace.length === 0)
+    throw new TypeError("Endpoint namespace must not be empty");
+  const payload = new TextEncoder().encode(
+    canonicalJson(toJsonValue(descriptor)),
+  );
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", payload);
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `${namespace}:v1:sha256:${hex}` as TaskSessionEndpointId;
+}
+
+export interface TaskRecoveryOptions<TResult, TApplicationContext = void> {
+  readonly resultCodec?: RuntimeCodec<TResult>;
+  readonly applicationContext?: TApplicationContext;
+  readonly signal?: AbortSignal;
+  /** Execution-scoped declaration. Takes precedence over the session provider. */
+  readonly declaration?: ToolDeclaration;
 }
 
 export interface TaskEnabledSession<TApplicationContext = void> {
+  readonly endpointId: TaskSessionEndpointId;
+  readonly capabilities: TaskCapabilities;
+  task(taskId: TaskId, options?: TaskControllerOptions): TaskController;
+  /** Lists one page of server inventory. */
+  listTasks(cursor?: string, signal?: AbortSignal): Promise<TaskListPage>;
+  /** Cancels a live owned execution or a detached task controller by identity. */
+  cancelTask(taskId: TaskId, signal?: AbortSignal): Promise<void>;
   callTool<TResult = CallToolResultV1 | CallToolResultV2>(
     name: string,
     params?: Readonly<Record<string, JsonValue>>,
     options?: ToolCallOptions<TResult, TApplicationContext>,
   ): Promise<ToolExecution<TResult, TApplicationContext>>;
+  callToolAndSettle<TResult = CallToolResultV1 | CallToolResultV2>(
+    name: string,
+    params?: Readonly<Record<string, JsonValue>>,
+    options?: CallToolAndSettleOptions<TResult, TApplicationContext>,
+  ): Promise<CallToolAndSettleResult<TResult>>;
   resumeTask<TResult = CallToolResultV1 | CallToolResultV2>(
     reference: SerializedTaskReference,
-    options?: {
-      readonly resultCodec?: RuntimeCodec<TResult>;
-      readonly applicationContext?: TApplicationContext;
-      readonly signal?: AbortSignal;
-    },
+    options?: TaskRecoveryOptions<TResult, TApplicationContext>,
   ): Promise<ToolExecution<TResult, TApplicationContext>>;
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;

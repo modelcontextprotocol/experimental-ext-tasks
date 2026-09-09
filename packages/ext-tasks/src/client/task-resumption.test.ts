@@ -4,8 +4,7 @@ import type { TaskId } from "../core/index.js";
 import {
   DispatchError,
   TaskRecoveryOwnershipError,
-  toolDeclarationV1,
-  toolDeclarationV2,
+  toolDeclaration,
   withTasks,
 } from "./index.js";
 import type {
@@ -121,7 +120,7 @@ describe("task reference resumption", () => {
       tools: {
         currentTool: (name) =>
           name === "ordinary"
-            ? toolDeclarationV1({
+            ? toolDeclaration({
                 name,
                 inputSchema: { type: "object" },
               })
@@ -148,7 +147,8 @@ describe("task reference resumption", () => {
     expect(errors).toEqual([]);
     expect(contexts).toHaveLength(1);
     expect(contexts[0]).toMatchObject({
-      lifetime: "basic",
+      scope: "request",
+      delivery: "peer-request",
       applicationContext: undefined,
     });
     finishOrdinary({ kind: "result", result: { content: [] } });
@@ -220,12 +220,12 @@ describe("task reference resumption", () => {
             tools: {
               currentTool: () =>
                 generation === "v1"
-                  ? toolDeclarationV1({
+                  ? toolDeclaration({
                       name: "roundtrip",
                       inputSchema: { type: "object" },
                       execution: { taskSupport: "required" },
                     })
-                  : toolDeclarationV2({
+                  : toolDeclaration({
                       name: "roundtrip",
                       inputSchema: { type: "object" },
                     }),
@@ -308,7 +308,7 @@ describe("task reference resumption", () => {
           if (resumed.kind !== "task") throw new Error("expected resumed task");
           expect(resumed.applicationContext).toBe(applicationContext);
           expect(resumed.serializeReference()).toEqual(reference);
-          await expect(resumed.result()).resolves.toEqual(
+          await expect(legacyResult(resumed)).resolves.toEqual(
             generation === "v1"
               ? { content: [{ type: "text", text: taskSuffix }] }
               : { resultType: "complete", content: [] },
@@ -337,7 +337,7 @@ describe("task reference resumption", () => {
     );
   });
 
-  it("retries the initial resumed observation once for any DispatchError", async () => {
+  it("retries the initial resumed observation only for retryable DispatchError", async () => {
     await fc.assert(
       fc.asyncProperty(fc.boolean(), async (retryable) => {
         const port = new FakePort({ generation: "v2", capabilities: {} });
@@ -363,16 +363,19 @@ describe("task reference resumption", () => {
         const session = withTasks(port, {
           tools: { currentTool: () => undefined },
         });
-        const execution = await session.resumeTask({
+        const resume = session.resumeTask({
           endpointId: port.endpointId,
           generation: "v2",
           taskId: "retry-resume" as TaskId,
           originalOperation: "tools/call",
         });
-        await expect(execution.result()).resolves.toMatchObject({
-          content: [],
-        });
-        expect(calls).toBe(2);
+        if (retryable) {
+          const execution = await resume;
+          await expect(legacyResult(execution)).resolves.toMatchObject({
+            content: [],
+          });
+        } else await expect(resume).rejects.toBeInstanceOf(DispatchError);
+        expect(calls).toBe(retryable ? 2 : 1);
         await session.close();
       }),
       { numRuns: 10 },
@@ -442,7 +445,9 @@ describe("task reference resumption", () => {
       }),
     });
     const execution = await first;
-    await expect(execution.result()).resolves.toMatchObject({ content: [] });
+    await expect(legacyResult(execution)).resolves.toMatchObject({
+      content: [],
+    });
     expect(handlerCalls).toBe(1);
     expect(
       port.requests.filter(
@@ -515,7 +520,9 @@ describe("task reference resumption", () => {
       "resume failed",
     );
     const execution = await session.resumeTask(reference);
-    await expect(execution.result()).resolves.toMatchObject({ content: [] });
+    await expect(legacyResult(execution)).resolves.toMatchObject({
+      content: [],
+    });
     expect(calls).toBe(2);
     await session.close();
   });
@@ -547,11 +554,12 @@ describe("task reference resumption", () => {
       originalOperation: "tools/call",
     } as const;
     const first = await session.resumeTask(reference);
-    await first.result();
+    await legacyResult(first);
     await Promise.resolve();
     const second = await session.resumeTask(reference);
-    await expect(second.result()).resolves.toMatchObject({ content: [] });
+    await expect(legacyResult(second)).resolves.toMatchObject({ content: [] });
     expect(port.requests).toHaveLength(2);
     await session.close();
   });
 });
+import { legacyResult } from "../../test-support/client/semantic.js";

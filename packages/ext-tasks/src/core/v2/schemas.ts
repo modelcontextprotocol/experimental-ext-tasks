@@ -151,7 +151,7 @@ const ToolV2Schema = openObject({
 });
 
 const CompleteResultTypeSchema = z.literal("complete").default("complete");
-const CallToolResultV2Schema = openObject({
+const CompleteCallToolResultV2Schema = openObject({
   resultType: CompleteResultTypeSchema,
   content: z.array(ContentBlockV2Schema),
   structuredContent: JsonValueSchema.optional(),
@@ -205,6 +205,20 @@ const InputRequestV2Schema = z.discriminatedUnion("method", [
   ElicitRequestV2Schema,
 ]);
 const InputRequestsV2Schema = z.record(z.string(), InputRequestV2Schema);
+const InputRequiredCallToolResultV2Schema = openObject({
+  resultType: z.literal("input_required"),
+  inputRequests: InputRequestsV2Schema.optional(),
+  requestState: z.string().optional(),
+  _meta: MetaSchema.optional(),
+}).refine(
+  (result) =>
+    result.inputRequests !== undefined || result.requestState !== undefined,
+  { message: "At least one of inputRequests or requestState must be present" },
+);
+const CallToolResultV2Schema = z.union([
+  CompleteCallToolResultV2Schema,
+  InputRequiredCallToolResultV2Schema,
+]);
 
 const CreateMessageResultV2Schema = openObject({
   content: JsonValueSchema,
@@ -327,6 +341,7 @@ export {
   ContentBlockV2Schema,
   ToolV2Schema,
   CallToolResultV2Schema,
+  InputRequiredCallToolResultV2Schema,
   RequestIdV2Schema,
   TaskStatusV2Schema,
   TaskEligibleMethodV2Schema,
@@ -367,6 +382,9 @@ export {
 export type ContentBlockV2 = z.infer<typeof ContentBlockV2Schema>;
 export type ToolV2 = z.infer<typeof ToolV2Schema>;
 export type CallToolResultV2 = z.infer<typeof CallToolResultV2Schema>;
+export type InputRequiredCallToolResultV2 = z.infer<
+  typeof InputRequiredCallToolResultV2Schema
+>;
 export type RequestIdV2 = z.infer<typeof RequestIdV2Schema>;
 export type TaskStatusV2 = z.infer<typeof TaskStatusV2Schema>;
 export type TaskEligibleMethodV2 = z.infer<typeof TaskEligibleMethodV2Schema>;

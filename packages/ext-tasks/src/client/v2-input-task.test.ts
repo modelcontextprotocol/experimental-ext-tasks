@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { toolDeclarationV2, withTasks } from "./index.js";
+import { toolDeclaration, withTasks } from "./index.js";
 import {
   FakePort,
   asJson,
@@ -50,14 +50,13 @@ describe("V2 input and task behavior", () => {
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
-      tools: { currentTool: () => toolDeclarationV2(tool) },
+      tools: { currentTool: () => toolDeclaration(tool) },
     });
     const execution = await session.callTool("long");
     expect(execution.kind).toBe("task");
     expect(execution.handle).toEqual({
-      generation: "v2",
       taskId: "v2-task",
-      originalOperation: "tools/call",
+      operation: "tools/call",
     });
     expect(port.requests[0]).toMatchObject({
       method: "tools/call",
@@ -69,7 +68,7 @@ describe("V2 input and task behavior", () => {
         },
       },
     });
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       resultType: "complete",
       content: [{ type: "text", text: "done" }],
     });
@@ -152,7 +151,7 @@ describe("V2 input and task behavior", () => {
           const session = withTasks<{ marker: string }>(port, {
             tools: {
               currentTool: () =>
-                toolDeclarationV2({
+                toolDeclaration({
                   name: "x",
                   inputSchema: { type: "object" },
                 }),
@@ -176,7 +175,7 @@ describe("V2 input and task behavior", () => {
               applicationContext: { marker: "context" },
             },
           );
-          await expect(execution.result()).resolves.toEqual({
+          await expect(legacyResult(execution)).resolves.toEqual({
             resultType: "complete",
             content: [],
           });
@@ -184,9 +183,17 @@ describe("V2 input and task behavior", () => {
           expect(
             observed.map((value) => {
               const entry = expectRecord(asJson(value));
-              return expectRecord(entry.context).inputKey;
+              return expectRecord(entry.context).inputId;
             }),
           ).toEqual(inputs.map(({ key }) => key));
+          for (const value of observed) {
+            const context = expectRecord(expectRecord(asJson(value)).context);
+            expect(context).toMatchObject({
+              scope: "task",
+              delivery: "task-update",
+              taskId: "input-task",
+            });
+          }
           const updates = port.requests.filter(
             (request) => expectRecord(request).method === "tasks/update",
           );
@@ -272,7 +279,7 @@ describe("V2 input and task behavior", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
       onInputRequest: async () => {
         await Promise.resolve();
@@ -282,7 +289,7 @@ describe("V2 input and task behavior", () => {
       onError: (error) => errors.push(error),
     });
     const execution = await session.callTool("x");
-    await expect(execution.result()).resolves.toMatchObject({
+    await expect(legacyResult(execution)).resolves.toMatchObject({
       resultType: "complete",
     });
     expect(handlerCalls).toBe(3);
@@ -355,7 +362,7 @@ describe("V2 input and task behavior", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
       onInputRequest: async () => {
         await Promise.resolve();
@@ -364,7 +371,7 @@ describe("V2 input and task behavior", () => {
       onError: (error) => errors.push(error),
     });
     const execution = await session.callTool("x");
-    await expect(execution.result()).resolves.toMatchObject({
+    await expect(legacyResult(execution)).resolves.toMatchObject({
       resultType: "complete",
     });
     const updates = port.requests.filter(
@@ -422,7 +429,7 @@ describe("V2 input and task behavior", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV2({ name: "x", inputSchema: { type: "object" } }),
+          toolDeclaration({ name: "x", inputSchema: { type: "object" } }),
       },
       onInputRequest: (_request, context) => {
         handlerSignal = context.signal;
@@ -455,7 +462,7 @@ describe("V2 input and task behavior", () => {
         },
       }),
     );
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       resultType: "complete",
       content: [],
     });
@@ -523,7 +530,7 @@ describe("V2 input and task behavior", () => {
           const session = withTasks(port, {
             tools: {
               currentTool: () =>
-                toolDeclarationV2({
+                toolDeclaration({
                   name: "x",
                   inputSchema: { type: "object" },
                 }),
@@ -531,17 +538,17 @@ describe("V2 input and task behavior", () => {
           });
           const execution = await session.callTool("x");
           if (status === "completed")
-            await expect(execution.result()).resolves.toEqual({
+            await expect(legacyResult(execution)).resolves.toEqual({
               resultType: "complete",
               content: [],
             });
           else if (status === "failed")
-            await expect(execution.result()).rejects.toMatchObject({
+            await expect(legacyResult(execution)).rejects.toMatchObject({
               name: "JsonRpcResponseError",
               code: -32000,
               message: "task failed",
             });
-          else await expect(execution.result()).rejects.toThrow(/cancel/i);
+          else await expect(legacyResult(execution)).rejects.toThrow(/cancel/i);
           expect(getCalls).toBe(1);
           await session.close();
         },
@@ -550,3 +557,4 @@ describe("V2 input and task behavior", () => {
     );
   });
 });
+import { legacyResult } from "../../test-support/client/semantic.js";

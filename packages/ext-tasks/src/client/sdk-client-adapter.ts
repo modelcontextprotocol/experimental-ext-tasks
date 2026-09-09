@@ -1,7 +1,10 @@
 import { Client, ProtocolError } from "@modelcontextprotocol/client";
-import type { StandardSchemaV1 } from "@modelcontextprotocol/client";
-import { isJsonValue } from "../core/index.js";
+import type { StandardSchemaV1, Tool } from "@modelcontextprotocol/client";
+import { isJsonValue, toJsonValue } from "../core/index.js";
 import type { JsonValue } from "../core/index.js";
+import { toolDeclaration } from "./api.js";
+import type { TaskEnabledSession, WithTasksOptions } from "./api.js";
+import { withOwnedTasks } from "./session.js";
 import type { DispatchOptions, SessionTaskCapabilities } from "./port.js";
 import { DispatchError } from "./port.js";
 import type {
@@ -31,6 +34,10 @@ function isJsonRecord(
     !Array.isArray(value) &&
     typeof value === "object"
   );
+}
+
+function allowsInputRequired(request: JsonValue): boolean {
+  return isJsonRecord(request) && request.method === "tools/call";
 }
 
 function clientTaskCapabilities(
@@ -84,9 +91,25 @@ export type RawClientDispatch = (
   options?: DispatchOptions,
 ) => Promise<JsonRpcResponse>;
 
+/** Exact V2 request metadata framing unavailable from the SDK Client public API. */
+export interface V2RequestFraming {
+  readonly protocolVersion: string;
+  readonly clientInfo: Readonly<Record<string, JsonValue>>;
+  readonly clientCapabilities: Readonly<Record<string, JsonValue>>;
+}
+
 /** Options for adapting an SDK Client. */
 export interface ClientSessionPortOptions {
   readonly rawDispatch?: RawClientDispatch;
+  /** Required with rawDispatch for V2; copied and deeply frozen at creation. */
+  readonly v2RequestFraming?: V2RequestFraming;
+}
+
+/** Options for creating an owned task-enabled session from an MCP SDK Client. */
+export interface CreateTaskSessionFromClientOptions<TApplicationContext = void>
+  extends WithTasksOptions<TApplicationContext>, ClientSessionPortOptions {
+  /** Opaque stable identity used to scope serialized task references. */
+  readonly endpointId: string;
 }
 
 function requiresRawDispatch(
@@ -96,6 +119,132 @@ function requiresRawDispatch(
   if (capabilities.generation !== "v2") return false;
   const method = asClientRequest(request).method;
   return method === "tools/call" || method.startsWith("tasks/");
+}
+
+const TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks";
+const PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion";
+const CLIENT_INFO_META = "io.modelcontextprotocol/clientInfo";
+const CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities";
+
+function deepFreezeJson<T extends JsonValue>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const nested of Object.values(value)) deepFreezeJson(nested);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function normalizeV2RequestFraming(
+  framing: V2RequestFraming,
+): V2RequestFraming {
+  if (framing.protocolVersion.trim().length === 0)
+    throw new TypeError("v2RequestFraming.protocolVersion must be non-empty");
+  const clientInfo = toJsonValue(framing.clientInfo);
+  const clientCapabilities = toJsonValue(framing.clientCapabilities);
+  if (!isJsonRecord(clientInfo))
+    throw new TypeError("v2RequestFraming.clientInfo must be a JSON object");
+  if (!isJsonRecord(clientCapabilities))
+    throw new TypeError(
+      "v2RequestFraming.clientCapabilities must be a JSON object",
+    );
+  return Object.freeze({
+    protocolVersion: framing.protocolVersion,
+    clientInfo: deepFreezeJson(structuredClone(clientInfo)),
+    clientCapabilities: deepFreezeJson(structuredClone(clientCapabilities)),
+  });
+}
+
+/**
+ * Frames V2 task metadata. Package-reserved framing keys overwrite caller collisions.
+ */
+function frameV2TaskRequest(
+  request: JsonValue,
+  framing: V2RequestFraming,
+): JsonValue {
+  if (!isJsonRecord(request))
+    throw new DispatchError("MCP request must be a JSON object");
+  const envelope = asClientRequest(request);
+  const params = envelope.params ?? {};
+  const callerMeta = isJsonRecord(params._meta) ? params._meta : {};
+  const clientCapabilities = framing.clientCapabilities;
+  const extensions = isJsonRecord(clientCapabilities.extensions)
+    ? clientCapabilities.extensions
+    : {};
+  return {
+    ...request,
+    params: {
+      ...params,
+      _meta: {
+        ...callerMeta,
+        [PROTOCOL_VERSION_META]: framing.protocolVersion,
+        [CLIENT_INFO_META]: framing.clientInfo,
+        [CLIENT_CAPABILITIES_META]: {
+          ...clientCapabilities,
+          extensions: { ...extensions, [TASKS_EXTENSION_ID]: {} },
+        },
+      },
+    },
+  };
+}
+
+/** Converts an MCP SDK Tool into the package's neutral declaration. */
+export function toolDeclarationFromMcpTool(
+  tool: Tool,
+): import("./api.js").ToolDeclaration {
+  const normalized = toJsonValue(tool);
+  if (!isJsonRecord(normalized))
+    throw new TypeError("MCP tool must serialize to a JSON object");
+  const inputSchema = normalized.inputSchema;
+  if (!isJsonRecord(inputSchema))
+    throw new TypeError("MCP tool inputSchema must be a JSON object");
+  const known = new Set([
+    "name",
+    "title",
+    "description",
+    "inputSchema",
+    "outputSchema",
+    "annotations",
+    "icons",
+    "_meta",
+    "execution",
+  ]);
+  const execution = isJsonRecord(normalized.execution)
+    ? normalized.execution
+    : undefined;
+  const taskSupport = execution?.taskSupport;
+  const executionExtensions =
+    execution === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(execution).filter(([key]) => key !== "taskSupport"),
+        );
+  return toolDeclaration({
+    name: tool.name,
+    ...(tool.title === undefined ? {} : { title: tool.title }),
+    ...(tool.description === undefined
+      ? {}
+      : { description: tool.description }),
+    inputSchema,
+    ...(isJsonRecord(normalized.outputSchema)
+      ? { outputSchema: normalized.outputSchema }
+      : {}),
+    ...(isJsonRecord(normalized.annotations)
+      ? { annotations: normalized.annotations }
+      : {}),
+    ...(Array.isArray(normalized.icons) && normalized.icons.every(isJsonRecord)
+      ? { icons: normalized.icons }
+      : {}),
+    ...(isJsonRecord(normalized._meta) ? { metadata: normalized._meta } : {}),
+    ...(taskSupport === "forbidden" ||
+    taskSupport === "optional" ||
+    taskSupport === "required"
+      ? { taskSupport }
+      : {}),
+    ...(executionExtensions === undefined ? {} : { executionExtensions }),
+    extensions: Object.fromEntries(
+      Object.entries(normalized).filter(([key]) => !known.has(key)),
+    ),
+  });
 }
 
 type ClientPublicSurface = Pick<
@@ -110,36 +259,6 @@ type ClientPublicSurface = Pick<
 
 const adaptedClients = new WeakSet();
 
-/** Returns whether a value implements the connected MCP session port contract. */
-export function isConnectedMcpSessionPort(
-  value: unknown,
-): value is ConnectedMcpSessionPort {
-  if (value === null || typeof value !== "object") return false;
-  const candidate = value as Partial<ConnectedMcpSessionPort>;
-  return (
-    typeof candidate.endpointId === "string" &&
-    candidate.taskCapabilities !== undefined &&
-    typeof candidate.dispatch === "function" &&
-    typeof candidate.onServerRequest === "function" &&
-    typeof candidate.onNotification === "function" &&
-    typeof candidate.onInvalidated === "function" &&
-    typeof candidate.invalidated === "boolean"
-  );
-}
-
-/** Returns whether a value exposes the MCP SDK client methods required by this adapter. */
-export function isClientPublicSurface(
-  value: unknown,
-): value is ClientPublicSurface {
-  if (value === null || typeof value !== "object") return false;
-  const candidate = value as Partial<ClientPublicSurface>;
-  return (
-    typeof candidate.request === "function" &&
-    typeof candidate.getProtocolEra === "function" &&
-    typeof candidate.getServerCapabilities === "function"
-  );
-}
-
 export class ClientSessionPort implements ConnectedMcpSessionPort {
   readonly taskCapabilities: SessionTaskCapabilities;
   private readonly serverRequestListeners = new Set<
@@ -152,6 +271,7 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
   private readonly previousFallbackRequestHandler: ClientPublicSurface["fallbackRequestHandler"];
   private readonly previousFallbackNotificationHandler: ClientPublicSurface["fallbackNotificationHandler"];
   private readonly previousOnclose: ClientPublicSurface["onclose"];
+  private readonly v2RequestFraming: V2RequestFraming | undefined;
   private disposed = false;
   private isInvalidated = false;
 
@@ -207,15 +327,23 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
     private readonly client: ClientPublicSurface,
     readonly endpointId: string,
     private readonly rawDispatch?: RawClientDispatch,
+    v2RequestFraming?: V2RequestFraming,
   ) {
     if (adaptedClients.has(client))
       throw new TypeError(
         "An ext-tasks adapter is already active for this Client",
       );
+    this.v2RequestFraming =
+      v2RequestFraming === undefined
+        ? undefined
+        : normalizeV2RequestFraming(v2RequestFraming);
     this.taskCapabilities = clientTaskCapabilities(client);
-    if (this.taskCapabilities.generation === "v2" && rawDispatch === undefined)
+    if (
+      this.taskCapabilities.generation === "v2" &&
+      (rawDispatch === undefined || this.v2RequestFraming === undefined)
+    )
       throw new TypeError(
-        "SDK Client cannot safely coordinate V2 task wire shapes; createSessionPortFromClient requires options.rawDispatch for a V2 session",
+        "A V2 task session requires options.rawDispatch and options.v2RequestFraming to coordinate task wire shapes",
       );
     this.previousFallbackRequestHandler = client.fallbackRequestHandler;
     this.previousFallbackNotificationHandler =
@@ -237,16 +365,23 @@ export class ClientSessionPort implements ConnectedMcpSessionPort {
   ): Promise<JsonRpcResponse> {
     try {
       if (requiresRawDispatch(this.taskCapabilities, request)) {
-        if (this.rawDispatch === undefined)
+        if (
+          this.rawDispatch === undefined ||
+          this.v2RequestFraming === undefined
+        )
           throw new DispatchError(
-            "SDK Client cannot dispatch V2 task wire shapes; provide rawDispatch",
+            "SDK Client cannot dispatch V2 task wire shapes without rawDispatch and v2RequestFraming",
           );
-        return await this.rawDispatch(request, options);
+        return await this.rawDispatch(
+          frameV2TaskRequest(request, this.v2RequestFraming),
+          options,
+        );
       }
       const result = await this.client.request(
         asClientRequest(request),
         jsonValueSchema,
         {
+          ...(allowsInputRequired(request) ? { allowInputRequired: true } : {}),
           ...(options.signal === undefined ? {} : { signal: options.signal }),
           ...(options.context?.headers === undefined
             ? {}
@@ -322,5 +457,31 @@ export function createSessionPortFromClient(
   endpointId: string,
   options: ClientSessionPortOptions = {},
 ): ConnectedMcpSessionPort & Disposable {
-  return new ClientSessionPort(client, endpointId, options.rawDispatch);
+  return new ClientSessionPort(
+    client,
+    endpointId,
+    options.rawDispatch,
+    options.v2RequestFraming,
+  );
+}
+
+/** Creates a task-enabled session that owns and disposes its Client adapter. */
+export function createTaskSessionFromClient<TApplicationContext = void>(
+  client: Client,
+  options: CreateTaskSessionFromClientOptions<TApplicationContext>,
+): TaskEnabledSession<TApplicationContext> {
+  const { endpointId, rawDispatch, v2RequestFraming, ...sessionOptions } =
+    options;
+  const port = createSessionPortFromClient(client, endpointId, {
+    rawDispatch,
+    v2RequestFraming,
+  });
+  try {
+    return withOwnedTasks(port, sessionOptions, () => {
+      port[Symbol.dispose]();
+    });
+  } catch (error) {
+    port[Symbol.dispose]();
+    throw error;
+  }
 }

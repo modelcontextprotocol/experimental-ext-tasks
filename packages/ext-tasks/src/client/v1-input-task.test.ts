@@ -6,7 +6,7 @@ import {
   InputCorrelationError,
   TaskCancellationUnsupportedError,
   TaskExecutionClosedError,
-  toolDeclarationV1,
+  toolDeclaration,
   withTasks,
 } from "./index.js";
 import type { JsonRpcResponse } from "./index.js";
@@ -86,11 +86,14 @@ describe("V1 input and task behavior", () => {
       });
       expect(observed[0]).toMatchObject({
         request: { params: { prompt: "p" } },
-        context: { lifetime: "basic", applicationContext: { marker: "ctx" } },
+        context: {
+          scope: "request",
+          delivery: "peer-request",
+          applicationContext: { marker: "ctx" },
+        },
       });
       expect(
-        (observed[0] as { context: { executionId: string } }).context
-          .executionId,
+        (observed[0] as { context: { inputId: string } }).context.inputId,
       ).toMatch(/^execution-/);
       expect(observed[1]).toEqual({ kind: "result", result: input.result });
       await session.close();
@@ -232,7 +235,7 @@ describe("V1 input and task behavior", () => {
           const session = withTasks<string>(port, {
             tools: {
               currentTool: (name) =>
-                toolDeclarationV1({
+                toolDeclaration({
                   name,
                   inputSchema: { type: "object" },
                   execution: { taskSupport: "required" },
@@ -286,7 +289,8 @@ describe("V1 input and task behavior", () => {
           if (succeeds) {
             const entry = expectRecord(asJson(observed[0]));
             expect(entry.context).toMatchObject({
-              lifetime: "task-v1",
+              scope: "task",
+              delivery: "peer-request",
               taskId: "task-0",
               applicationContext: "context-0",
             });
@@ -425,7 +429,7 @@ describe("V1 input and task behavior", () => {
     const session = withTasks(port, {
       tools: {
         currentTool: () =>
-          toolDeclarationV1({
+          toolDeclaration({
             name: "x",
             inputSchema: { type: "object" },
             execution: { taskSupport: "required" },
@@ -449,7 +453,7 @@ describe("V1 input and task behavior", () => {
     });
     expect(handlerSignal?.aborted).toBe(false);
     await execution.close();
-    await expect(execution.result()).rejects.toBeInstanceOf(
+    await expect(legacyResult(execution)).rejects.toBeInstanceOf(
       TaskExecutionClosedError,
     );
     expect(handlerSignal?.aborted).toBe(true);
@@ -514,7 +518,7 @@ describe("V1 input and task behavior", () => {
             tools: {
               currentTool: () => {
                 lookups += 1;
-                return toolDeclarationV1(tool);
+                return toolDeclaration(tool);
               },
             },
           });
@@ -523,7 +527,7 @@ describe("V1 input and task behavior", () => {
             (taskSupport === "required" ||
               (taskSupport === "optional" && preferTask));
           const execution = await session.callTool("x", undefined, {
-            preferTask,
+            task: { preference: preferTask ? "prefer" : "allow" },
           });
           if (taskSelected) {
             expect(execution.kind).toBe("task");
@@ -604,17 +608,17 @@ describe("V1 input and task behavior", () => {
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
-      tools: { currentTool: () => toolDeclarationV1(tool) },
+      tools: { currentTool: () => toolDeclaration(tool) },
     });
     const execution = await session.callTool("long");
     expect(execution.kind).toBe("task");
     expect(execution.handle).toEqual({
-      generation: "v1",
       taskId: "v1-task",
-      originalOperation: "tools/call",
+      operation: "tools/call",
     });
     const snapshots: unknown[] = [];
-    for await (const snapshot of execution.updates()) snapshots.push(snapshot);
+    for await (const snapshot of legacyUpdates(execution))
+      snapshots.push(snapshot);
     expect(snapshots).toEqual([
       {
         generation: "v1",
@@ -639,8 +643,9 @@ describe("V1 input and task behavior", () => {
     ]);
     const first = execution.result();
     expect(execution.result()).toBe(first);
-    await expect(first).resolves.toEqual({
-      content: [{ type: "text", text: "done" }],
+    await expect(first).resolves.toMatchObject({
+      status: "completed",
+      result: { content: [{ type: "text", text: "done" }] },
     });
     await session.close();
   });
@@ -692,10 +697,10 @@ describe("V1 input and task behavior", () => {
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
-      tools: { currentTool: () => toolDeclarationV1(tool) },
+      tools: { currentTool: () => toolDeclaration(tool) },
     });
     const execution = await session.callTool("notified");
-    const iterator = execution.updates()[Symbol.asyncIterator]();
+    const iterator = legacyUpdates(execution)[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
       value: { task: { status: "working" } },
     });
@@ -720,7 +725,7 @@ describe("V1 input and task behavior", () => {
       done: true,
       value: undefined,
     });
-    await expect(execution.result()).resolves.toEqual({
+    await expect(legacyResult(execution)).resolves.toEqual({
       content: [{ type: "text", text: "notified" }],
     });
     expect(getCalls).toBeLessThanOrEqual(1);
@@ -765,7 +770,7 @@ describe("V1 input and task behavior", () => {
       throw new Error(`unexpected method ${formatJson(record.method)}`);
     };
     const session = withTasks(port, {
-      tools: { currentTool: () => toolDeclarationV1(tool) },
+      tools: { currentTool: () => toolDeclaration(tool) },
     });
     const execution = await session.callTool("x");
     await expect(execution.cancel()).rejects.toBeInstanceOf(
@@ -777,9 +782,13 @@ describe("V1 input and task behavior", () => {
       ),
     ).toBe(false);
     await execution.close();
-    await expect(execution.result()).rejects.toBeInstanceOf(
+    await expect(legacyResult(execution)).rejects.toBeInstanceOf(
       TaskExecutionClosedError,
     );
     await session.close();
   });
 });
+import {
+  legacyResult,
+  legacyUpdates,
+} from "../../test-support/client/semantic.js";
